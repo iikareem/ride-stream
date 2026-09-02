@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+dist/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs & runtime
+logs/
+*.log
+.kafka-data/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Coverage / test
+coverage/
+*.tsbuildinfo
