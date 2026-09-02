@@ -1,24 +1,26 @@
 # RideStream
 
-Real-time GPS event pipeline for a simulated ride-sharing backend, built on Apache Kafka with NestJS and KafkaJS.
+RideStream is a real-time GPS streaming pipeline that models the backend of a ride-sharing platform. Simulated drivers publish location events into Apache Kafka; NestJS workers consume them through independent consumer groups to derive ETAs, maintain live positions, and detect anomalies.
 
-Drivers emit location updates. Kafka ingests them at scale, keyed by `driver_id` for per-driver ordering. Downstream consumer groups will compute ETAs, maintain live positions, and detect anomalies. Schema Registry, exactly-once-oriented processing, and Prometheus/Grafana observability are planned in later phases.
+Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. Exactly-once-oriented processing and Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 1 (foundation) — single-broker Kafka, GPS producer, and a printable consumer group.
+**Status:** Phase 1 — single-broker Kafka (KRaft), JSON producer/consumer foundation. Avro + Schema Registry lands in Phase 2 on the same Compose stack.
+
+> **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts by implementing a realistic ride-sharing GPS pipeline.
 
 ---
 
-## Why this project
+## Scope
 
-RideStream is a hands-on Kafka system designed around production concerns, not a hello-world broker demo:
+What this project exercises end to end:
 
-- Partitioning and key strategy
+- Partitioning strategy and message keys
 - Consumer groups, rebalancing, and offset commits
-- Schema evolution (Avro + Schema Registry)
-- Stateful stream-style processing and anomaly detection
-- Lag monitoring and fault-injection drills
+- Avro serialization with Schema Registry and schema evolution
+- Stateful processing for anomaly detection
+- Consumer lag monitoring and fault-injection drills
 
-Clustering (multi-broker) is deferred until the full single-broker pipeline works end to end.
+The full pipeline is proven on one broker first. Multi-broker clustering follows once that path is solid.
 
 ---
 
@@ -266,7 +268,7 @@ Message key: `driver_id` (ordering per driver). Serialization moves to Avro in P
 | Decision | Rationale |
 | --- | --- |
 | Partition by `driver_id` | Preserves GPS order per driver; required for sane ETA / anomaly logic |
-| 6 partitions | Enough parallelism to demo consumer-group scaling without over-provisioning locally |
+| 6 partitions | Enough parallelism to practice consumer-group scaling without over-provisioning locally |
 | JSON in Phase 1 | Unblocks the pipeline; Avro comes once the path is proven |
 | Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
