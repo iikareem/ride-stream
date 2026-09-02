@@ -23,7 +23,7 @@ export class GpsPrinterService implements OnModuleInit {
 
     await consumer.run({
       eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
-        this.logger.log(
+        this.logger.log(  
           `topic=${topic} partition=${partition} offset=${message.offset} key=${message.key?.toString()} value=${message.value?.toString()}`,
         );
       },
