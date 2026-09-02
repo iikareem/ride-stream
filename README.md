@@ -285,12 +285,6 @@ Companion study sheet (questions and answers from building Phase 1):
 
 ---
 
-## Resume blurb
-
-> Built a real-time GPS tracking pipeline simulating a ride-sharing backend using Apache Kafka and NestJS. Partitioned events by driver ID for strict ordering, added consumer-group processing with rebalance visibility, and scoped later phases for schema evolution, stateful anomaly detection, and Prometheus/Grafana observability.
-
----
-
 ## License
 
 Private / unlicensed (`UNLICENSED`). Not published for reuse.
