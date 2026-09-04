@@ -538,6 +538,28 @@ Next learning target when you are ready: Phase 3 — separate consumer groups (E
 
 ---
 
+## H. Phase 3a — ETA Calculator
+
+### Q48. Why a separate consumer group for ETA instead of extending the printer?
+
+Different **jobs** need different **offsets**. The printer and ETA calculator both read `gps-events` but must not share a group id. Same group would split partitions between them and each would miss half the drivers. Separate groups (`ridestream-gps-printer` vs `ridestream-eta`) each get the full stream.
+
+---
+
+### Q49. Why publish ETA to `eta-updates` instead of only logging?
+
+So ETA becomes its own **event stream**. Other services (live UI, notifications, Phase 8 WebSocket) can subscribe later without changing the ETA worker. No database required for learning — Kafka carries the derived result.
+
+---
+
+### Q50. How does RideStream get a destination without a trip DB?
+
+Learning shortcut: the ETA worker assigns a **stable fake destination per `driver_id`** (hash → Cairo point, kept in an in-memory `Map`). Formula: haversine distance / `max(speed_kmh, 5)` → `eta_seconds`.
+
+In production, destination would come from a trip message/body or a Redis/DB lookup when the trip is assigned.
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -546,16 +568,20 @@ docker compose up -d
 docker compose logs init-topics
 docker compose down          # wipes data (no volumes)
 
-# After JSON → Avro cutover, always reset once:
+# After JSON → Avro cutover, or after adding eta-updates:
 docker compose down && docker compose up -d
+# or only recreate topic init:
+docker compose up -d --force-recreate init-topics
 
 # Apps
 npm run start:producer
-npm run start:consumer       # run twice = same group, split partitions
+npm run start:eta            # gps-events → eta-updates
+npm run start:consumer       # optional GPS printer
 
 # Schema Registry
 curl -s http://localhost:8081/subjects
 curl -s http://localhost:8081/subjects/gps-events-value/versions
+curl -s http://localhost:8081/subjects/eta-updates-value/versions
 
 # UI
 open http://localhost:8080
@@ -563,4 +589,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 2 Q&A catch-up (Q41–Q47 + review letter). Add new Q&As as you go.*
+*Last updated after Phase 3a ETA Calculator (Q48–Q50). Add new Q&As as you go.*

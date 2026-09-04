@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. Exactly-once-oriented processing and Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 2 — Avro serialization via Confluent Schema Registry; Phase 1 JSON path retired.
+**Status:** Phase 3a — ETA Calculator consumer group (`gps-events` → `eta-updates`). Phase 2 Avro path remains the wire format.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts by implementing a realistic ride-sharing GPS pipeline.
 
@@ -44,29 +44,32 @@ Drivers (producers)
   Capstone (Phase 8): Redis Pub/Sub → WebSocket live push to clients
 ```
 
-### Phase 2 (current)
+### Phase 3a (current)
 
 ```
-GPS producer ──Avro──▶ Schema Registry (register / fetch by id)
-       │
-       └──binary──▶ gps-events (6 partitions)
+GPS producer ──Avro──▶ gps-events
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               
+   gps-printer      ridestream-eta
+   (log only)       (haversine ETA)
                           │
                           ▼
-               gps-printer consumer group
-               (decode Avro via Schema Registry)
+                     eta-updates (Avro)
 ```
 
 | Component | Role |
 | --- | --- |
-| Producer | Simulates N drivers; encodes GPS events as Avro; key = `driver_id` |
-| Subject `gps-events-value` | Schema Registry subject (v1 baseline, v2 adds optional `heading`) |
-| Topic `gps-events` | 6 partitions, created by Compose `init-topics` |
-| Consumer `ridestream-gps-printer` | Decodes Avro and logs fields; run multiple instances to observe rebalance |
+| Producer | Simulates N drivers; Avro GPS to `gps-events` |
+| `ridestream-gps-printer` | Decodes and logs GPS (independent group) |
+| `ridestream-eta` | Decodes GPS, assigns a stable fake destination per driver, publishes Avro ETA to `eta-updates` |
+| Topics | `gps-events`, `eta-updates` (6 partitions each via `init-topics`) |
 
-Avro payloads are not compatible with leftover Phase 1 JSON messages. After upgrading, reset local Kafka once:
+If Kafka was already running before `eta-updates` was added, recreate topics:
 
 ```bash
-docker compose down && docker compose up -d
+docker compose up -d --force-recreate init-topics
+# or: docker compose down && docker compose up -d
 ```
 
 ---
@@ -99,6 +102,7 @@ ride-stream/
 │   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas
 │   ├── producer/               # GPS simulator worker
 │   ├── consumer/               # gps-printer consumer worker
+│   ├── eta/                    # ETA calculator worker
 │   ├── app.module.ts           # Default HTTP bootstrap (unused by workers)
 │   └── main.ts
 ├── .env.example
@@ -125,14 +129,17 @@ cd ride-stream
 cp .env.example .env
 npm install
 
-# Start Kafka, Schema Registry, Kafka UI, and create gps-events
+# Start Kafka, Schema Registry, Kafka UI, and create topics
 docker compose up -d
 docker compose logs init-topics
 
 # Terminal A — simulate drivers
 npm run start:producer
 
-# Terminal B — consume and print
+# Terminal B — ETA calculator (gps-events → eta-updates)
+npm run start:eta
+
+# Optional — print raw GPS
 npm run start:consumer
 ```
 
@@ -160,9 +167,11 @@ Copy `.env.example` to `.env`:
 | --- | --- | --- |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated bootstrap servers |
 | `GPS_EVENTS_TOPIC` | `gps-events` | GPS topic name |
+| `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
+| `ETA_GROUP_ID` | `ridestream-eta` | ETA consumer group id |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
-| `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (group id prefix for printer: `ridestream-gps-printer`) |
+| `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
 
 Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, not in the Nest app.
 
@@ -176,8 +185,10 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:producer:dev` | Producer with watch mode |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
+| `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
+| `npm run start:eta:dev` | ETA calculator with watch mode |
 | `npm run build` | Compile TypeScript |
-| `npm start` | Default Nest HTTP app (not used for Phase 1 pipeline) |
+| `npm start` | Default Nest HTTP app (not used by pipeline workers) |
 
 ---
 
@@ -273,7 +284,7 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 
 ### Phase 3 — Consumers
 
-- [ ] ETA Calculator consumer group → `eta-updates` topic
+- [x] ETA Calculator consumer group → `eta-updates` topic
 - [ ] Live Map Updater consumer group (in-memory latest positions)
 - [ ] Latency tuning and rebalance behavior
 
