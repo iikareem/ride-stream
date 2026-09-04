@@ -7,4 +7,6 @@ export interface GpsEvent {
   speed_kmh: number;
   timestamp: number;
   status: DriverStatus;
+  /** Degrees 0–360; null/undefined when unknown (schema v2 optional field) */
+  heading?: number | null;
 }
