@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. Exactly-once-oriented processing and Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 1 — single-broker Kafka (KRaft), JSON producer/consumer foundation. Avro + Schema Registry lands in Phase 2 on the same Compose stack.
+**Status:** Phase 2 — Avro serialization via Confluent Schema Registry; Phase 1 JSON path retired.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts by implementing a realistic ride-sharing GPS pipeline.
 
@@ -42,21 +42,30 @@ Drivers (producers)
              Prometheus + Grafana
 ```
 
-### Phase 1 (current)
+### Phase 2 (current)
 
 ```
-GPS producer  ──JSON──▶  gps-events (6 partitions)
-                                │
-                                ▼
-                     gps-printer consumer group
-                     (one or more members)
+GPS producer ──Avro──▶ Schema Registry (register / fetch by id)
+       │
+       └──binary──▶ gps-events (6 partitions)
+                          │
+                          ▼
+               gps-printer consumer group
+               (decode Avro via Schema Registry)
 ```
 
 | Component | Role |
 | --- | --- |
-| Producer | Simulates N drivers; emits GPS events every 2–5s; message key = `driver_id` |
+| Producer | Simulates N drivers; encodes GPS events as Avro; key = `driver_id` |
+| Subject `gps-events-value` | Schema Registry subject (v1 baseline, v2 adds optional `heading`) |
 | Topic `gps-events` | 6 partitions, created by Compose `init-topics` |
-| Consumer `ridestream-gps-printer` | Logs events; run multiple instances to observe rebalance |
+| Consumer `ridestream-gps-printer` | Decodes Avro and logs fields; run multiple instances to observe rebalance |
+
+Avro payloads are not compatible with leftover Phase 1 JSON messages. After upgrading, reset local Kafka once:
+
+```bash
+docker compose down && docker compose up -d
+```
 
 ---
 
@@ -68,7 +77,7 @@ GPS producer  ──JSON──▶  gps-events (6 partitions)
 | Application | NestJS (separate entrypoints per worker) |
 | Kafka client | KafkaJS |
 | Broker | Confluent Kafka 7.9 (KRaft, single broker) |
-| Schema (Phase 2+) | Confluent Schema Registry + Avro |
+| Schema | Confluent Schema Registry + Avro |
 | Metrics (Phase 5) | Prometheus + Grafana |
 | Local infra | Docker Compose |
 | Ops UI | Kafka UI (`localhost:8080`) |
@@ -83,10 +92,10 @@ ride-stream/
 ├── docs/
 │   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
 ├── src/
-│   ├── kafka/                  # Shared Kafka client, config, GPS event type
+│   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas
 │   ├── producer/               # GPS simulator worker
 │   ├── consumer/               # gps-printer consumer worker
-│   ├── app.module.ts           # Default HTTP bootstrap (unused in Phase 1 workers)
+│   ├── app.module.ts           # Default HTTP bootstrap (unused by workers)
 │   └── main.ts
 ├── .env.example
 └── package.json
@@ -147,6 +156,7 @@ Copy `.env.example` to `.env`:
 | --- | --- | --- |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated bootstrap servers |
 | `GPS_EVENTS_TOPIC` | `gps-events` | GPS topic name |
+| `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
 | `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (group id prefix for printer: `ridestream-gps-printer`) |
 
@@ -200,7 +210,9 @@ Or open Kafka UI → Consumer Groups → `ridestream-gps-printer`.
 
 ---
 
-## Event shape (Phase 1 JSON)
+## Event shape (Avro)
+
+Logical record (wire format is Confluent Avro binary with schema id):
 
 ```json
 {
@@ -209,11 +221,34 @@ Or open Kafka UI → Consumer Groups → `ridestream-gps-printer`.
   "longitude": 31.2357,
   "speed_kmh": 42.5,
   "timestamp": 1710000000000,
-  "status": "en_route"
+  "status": "en_route",
+  "heading": 187.5
 }
 ```
 
-Message key: `driver_id` (ordering per driver). Serialization moves to Avro in Phase 2.
+Message key: `driver_id` (ordering per driver).
+
+Schemas live in [`src/kafka/schemas/gps-event.avsc.ts`](src/kafka/schemas/gps-event.avsc.ts):
+
+- **v1** — baseline fields  
+- **v2** — adds optional `heading` (`null` default) under Registry `BACKWARD` compatibility  
+
+On startup the app registers v1 then v2 for subject `gps-events-value`, then produces with v2.
+
+### Verify schema evolution
+
+```bash
+# List versions for the value subject
+curl -s http://localhost:8081/subjects/gps-events-value/versions
+
+# Inspect latest schema
+curl -s http://localhost:8081/subjects/gps-events-value/versions/latest | jq .
+
+# Compatibility level for the subject (Compose defaults the cluster to BACKWARD)
+curl -s http://localhost:8081/config/gps-events-value | jq .
+```
+
+Or open Kafka UI → Schema Registry → `gps-events-value`.
 
 ---
 
@@ -227,10 +262,10 @@ Message key: `driver_id` (ordering per driver). Serialization moves to Avro in P
 - [x] Plain consumer group that prints events
 - [x] Rebalance assignment logging
 
-### Phase 2 — Schema management
+### Phase 2 — Schema management (done)
 
-- [ ] Avro serialization + Schema Registry
-- [ ] Backward-compatible schema evolution
+- [x] Avro serialization + Schema Registry
+- [x] Backward-compatible schema evolution (`heading` optional in v2)
 
 ### Phase 3 — Consumers
 
@@ -269,7 +304,8 @@ Message key: `driver_id` (ordering per driver). Serialization moves to Avro in P
 | --- | --- |
 | Partition by `driver_id` | Preserves GPS order per driver; required for sane ETA / anomaly logic |
 | 6 partitions | Enough parallelism to practice consumer-group scaling without over-provisioning locally |
-| JSON in Phase 1 | Unblocks the pipeline; Avro comes once the path is proven |
+| JSON then Avro | Phase 1 proved the path with JSON; Phase 2 switched to Avro + Registry |
+| Avro + BACKWARD | Optional fields with defaults (e.g. `heading`) let readers use new schemas on old data |
 | Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
@@ -279,7 +315,7 @@ Message key: `driver_id` (ordering per driver). Serialization moves to Avro in P
 
 ## Learning notes
 
-Companion study sheet (questions and answers from building Phase 1):
+Companion study sheet (questions and answers from building the pipeline):
 
 [`docs/kafka-learning-qa.md`](docs/kafka-learning-qa.md)
 

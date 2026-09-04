@@ -358,7 +358,9 @@ Use these as you hit Phases 2–6. Fill answers as you learn.
 
 ### Q29. Why use Schema Registry + Avro instead of JSON forever?
 
-*(Smaller payloads, enforced schema, safe evolution with compatibility modes.)*
+Binary Avro payloads are smaller than JSON. The Registry stores schemas by id; each message carries the id in a Confluent wire header. Producers and consumers agree on shape without embedding the full schema every time. Compatibility modes (BACKWARD here) block unsafe changes.
+
+In RideStream: subject `gps-events-value`, schemas in `src/kafka/schemas/gps-event.avsc.ts`, client `@kafkajs/confluent-schema-registry`.
 
 ---
 
@@ -398,6 +400,49 @@ Use these as you hit Phases 2–6. Fill answers as you learn.
 
 ---
 
+## G. Phase 2 — Avro + Schema Registry
+
+### Q36. What does the Confluent Avro wire format look like?
+
+Magic byte `0` + 4-byte big-endian schema id + Avro binary payload. KafkaJS Schema Registry `encode` / `decode` handle that for you.
+
+---
+
+### Q37. What is BACKWARD compatibility?
+
+A **new** schema can read data written with the **previous** schema. Adding an optional field with a default (like `heading: null`) is BACKWARD-safe. Removing a required field or adding a required field without a default is not.
+
+Compose sets `SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD`.
+
+---
+
+### Q38. How did RideStream evolve GPSEvent?
+
+1. Register **v1** (baseline fields) under `gps-events-value`  
+2. Register **v2** (adds optional `heading`) — Registry accepts it under BACKWARD  
+3. Producer encodes with **v2** id; consumer `decode` uses the id in each message  
+
+Verify:
+
+```bash
+curl -s http://localhost:8081/subjects/gps-events-value/versions
+curl -s http://localhost:8081/subjects/gps-events-value/versions/latest | jq .
+```
+
+---
+
+### Q39. Why wipe Kafka when switching from JSON to Avro?
+
+Avro binary is not JSON. Old Phase 1 messages on `gps-events` will fail decode. No volumes → `docker compose down && docker compose up -d` recreates an empty topic.
+
+---
+
+### Q40. Who registers the schema — producer or Registry UI?
+
+Either works. RideStream registers on app startup via `SchemaRegistryService.ensureSchemasRegistered()`. You can also paste schemas in Kafka UI. The subject name should stay `gps-events-value` (TopicNameStrategy for values).
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -406,9 +451,16 @@ docker compose up -d
 docker compose logs init-topics
 docker compose down          # wipes data (no volumes)
 
+# After JSON → Avro cutover, always reset once:
+docker compose down && docker compose up -d
+
 # Apps
 npm run start:producer
 npm run start:consumer       # run twice = same group, split partitions
+
+# Schema Registry
+curl -s http://localhost:8081/subjects
+curl -s http://localhost:8081/subjects/gps-events-value/versions
 
 # UI
 open http://localhost:8080
@@ -416,10 +468,4 @@ open http://localhost:8080
 
 ---
 
-## CV one-liner (from README)
-
-> Built a real-time GPS tracking pipeline simulating a ride-sharing backend using Apache Kafka and NestJS. Partitioned events by driver ID for strict ordering, implemented stateful stream processing for anomaly detection, and designed for exactly-once delivery with Schema Registry and Prometheus/Grafana observability.
-
----
-
-*Last updated from early Phase 1 learning session. Add new Q&As as you go.*
+*Last updated after Phase 2 (Avro + Schema Registry). Add new Q&As as you go.*
