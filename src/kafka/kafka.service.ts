@@ -14,14 +14,23 @@ export class KafkaService implements OnModuleDestroy {
 
   async createProducer(): Promise<Producer> {
     if (!this.producer) {
-      this.producer = this.kafka.producer();
+      this.producer = this.kafka.producer({
+        allowAutoTopicCreation: false,
+      });
       await this.producer.connect();
     }
     return this.producer;
   }
 
   async createConsumer(groupId: string): Promise<Consumer> {
-    const consumer = this.kafka.consumer({ groupId });
+    const consumer = this.kafka.consumer({
+      groupId,
+      sessionTimeout: kafkaConfig.sessionTimeoutMs,
+      heartbeatInterval: kafkaConfig.heartbeatIntervalMs,
+      rebalanceTimeout: kafkaConfig.rebalanceTimeoutMs,
+      maxWaitTimeInMs: kafkaConfig.maxWaitTimeInMs,
+      minBytes: kafkaConfig.fetchMinBytes,
+    });
     await consumer.connect();
     return consumer;
   }
