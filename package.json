@@ -16,6 +16,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@kafkajs/confluent-schema-registry": "^4.1.0",
     "@nestjs/common": "^11.0.12",
     "@nestjs/core": "^11.0.12",
     "@nestjs/platform-express": "^11.0.12",
