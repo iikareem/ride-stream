@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. Exactly-once-oriented processing and Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 3a — ETA Calculator consumer group (`gps-events` → `eta-updates`). Phase 2 Avro path remains the wire format.
+**Status:** Phase 3b — Live Map Updater (`eta-updates` → in-memory latest position + ETA). No HTTP yet.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts by implementing a realistic ride-sharing GPS pipeline.
 
@@ -44,7 +44,7 @@ Drivers (producers)
   Capstone (Phase 8): Redis Pub/Sub → WebSocket live push to clients
 ```
 
-### Phase 3a (current)
+### Phase 3 (current)
 
 ```
 GPS producer ──Avro──▶ gps-events
@@ -56,6 +56,10 @@ GPS producer ──Avro──▶ gps-events
                           │
                           ▼
                      eta-updates (Avro)
+                          │
+                          ▼
+                  ridestream-live-map
+                  (in-memory Map: position + ETA)
 ```
 
 | Component | Role |
@@ -63,6 +67,7 @@ GPS producer ──Avro──▶ gps-events
 | Producer | Simulates N drivers; Avro GPS to `gps-events` |
 | `ridestream-gps-printer` | Decodes and logs GPS (independent group) |
 | `ridestream-eta` | Decodes GPS, assigns a stable fake destination per driver, publishes Avro ETA to `eta-updates` |
+| `ridestream-live-map` | Consumes `eta-updates`, upserts latest position + ETA per `driver_id` in memory (no HTTP yet) |
 | Topics | `gps-events`, `eta-updates` (6 partitions each via `init-topics`) |
 
 If Kafka was already running before `eta-updates` was added, recreate topics:
@@ -103,6 +108,7 @@ ride-stream/
 │   ├── producer/               # GPS simulator worker
 │   ├── consumer/               # gps-printer consumer worker
 │   ├── eta/                    # ETA calculator worker
+│   ├── live-map/               # Live map updater (in-memory latest positions)
 │   ├── app.module.ts           # Default HTTP bootstrap (unused by workers)
 │   └── main.ts
 ├── .env.example
@@ -169,6 +175,7 @@ Copy `.env.example` to `.env`:
 | `GPS_EVENTS_TOPIC` | `gps-events` | GPS topic name |
 | `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
 | `ETA_GROUP_ID` | `ridestream-eta` | ETA consumer group id |
+| `LIVE_MAP_GROUP_ID` | `ridestream-live-map` | Live map consumer group id |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
 | `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
@@ -187,6 +194,8 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:consumer:dev` | Consumer with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
 | `npm run start:eta:dev` | ETA calculator with watch mode |
+| `npm run start:live-map` | Live map updater (`eta-updates` → in-memory Map) |
+| `npm run start:live-map:dev` | Live map updater with watch mode |
 | `npm run build` | Compile TypeScript |
 | `npm start` | Default Nest HTTP app (not used by pipeline workers) |
 
@@ -285,7 +294,7 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 ### Phase 3 — Consumers
 
 - [x] ETA Calculator consumer group → `eta-updates` topic
-- [ ] Live Map Updater consumer group (in-memory latest positions)
+- [x] Live Map Updater consumer group (`eta-updates` → in-memory latest + ETA)
 - [ ] Latency tuning and rebalance behavior
 
 ### Phase 4 — Stream processing

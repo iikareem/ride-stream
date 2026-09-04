@@ -180,7 +180,7 @@ Right now each command can run alone.
 | --- | --- | --- |
 | GPS printer | `gps-events` | `ridestream-gps-printer` |
 | ETA | `gps-events` → `eta-updates` | `ridestream-eta` |
-| Live map | `gps-events` | `ridestream-live-map` |
+| Live map | `eta-updates` | `ridestream-live-map` |
 | Anomaly | `gps-events` → `driver-anomalies` | `ridestream-anomaly` |
 
 Same topic + **different** groups = each service gets a full independent stream (own offsets).  
@@ -192,7 +192,7 @@ Same topic + **same** group = replicas sharing partitions for scale.
 
 Yes on commands and “knows its topic(s).”
 
-Isolation is by **`groupId`**, not always by different topics. ETA and live-map both read `gps-events` with different groups.
+Isolation is by **`groupId`**, not always by different topics. Printer and ETA both read `gps-events` with different groups; live-map reads the derived `eta-updates` stream.
 
 ---
 
@@ -560,6 +560,28 @@ In production, destination would come from a trip message/body or a Redis/DB loo
 
 ---
 
+## I. Phase 3b — Live Map Updater
+
+### Q51. Why consume `eta-updates` instead of `gps-events`?
+
+`eta-updates` already carries **position + ETA** (lat/lon, speed, destination, `eta_seconds`). The live map is a read model for “where is the driver and when do they arrive,” so one topic covers both. Live-map does not need to recompute ETA or duplicate GPS consumption.
+
+Kafka still keeps the raw GPS history on `gps-events`; live-map only needs the latest enriched state.
+
+---
+
+### Q52. Why keep it in memory instead of publishing another topic?
+
+Live map is a **read model** (current state), not a new event stream. The updater collapses `eta-updates` into “latest per `driver_id`.” Later Phase 8 moves this `Map` into Redis for multi-process / WebSocket sharing. No HTTP endpoint in this phase — logs prove the upsert works.
+
+---
+
+### Q53. Does live-map need ETA running?
+
+Yes for fresh data. Live-map only sees what ETA publishes to `eta-updates`. Start producer → ETA → live-map.
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -576,6 +598,7 @@ docker compose up -d --force-recreate init-topics
 # Apps
 npm run start:producer
 npm run start:eta            # gps-events → eta-updates
+npm run start:live-map       # eta-updates → in-memory Map
 npm run start:consumer       # optional GPS printer
 
 # Schema Registry
@@ -589,4 +612,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 3a ETA Calculator (Q48–Q50). Add new Q&As as you go.*
+*Last updated after Phase 3b Live Map Updater (Q51–Q53). Add new Q&As as you go.*
