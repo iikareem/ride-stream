@@ -4,6 +4,10 @@ import { KafkaService } from '../kafka/kafka.service';
 import { SchemaRegistryService } from '../kafka/schema-registry.service';
 import { kafkaConfig } from '../kafka/kafka.config';
 import { EtaUpdate } from '../kafka/eta-update';
+import {
+  attachRebalanceLogging,
+  latencyMs,
+} from '../kafka/consumer-observability';
 
 @Injectable()
 export class LiveMapUpdaterService implements OnModuleInit {
@@ -19,28 +23,15 @@ export class LiveMapUpdaterService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     const groupId = kafkaConfig.liveMapGroupId;
     const consumer = await this.kafka.createConsumer(groupId);
-
-    consumer.on(consumer.events.REBALANCING, () => {
-      this.logger.warn(`[${groupId}] rebalancing…`);
-    });
-
-    consumer.on(consumer.events.GROUP_JOIN, ({ payload }) => {
-      const assigned = payload.memberAssignment ?? {};
-      const summary = Object.entries(assigned)
-        .map(([topic, partitions]) => `${topic}=[${(partitions as number[]).join(', ')}]`)
-        .join(' ');
-      this.logger.log(
-        `[${groupId}] joined — member=${payload.memberId} assignment: ${summary || '(none)'}`,
-      );
-    });
+    attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
       topic: kafkaConfig.etaUpdatesTopic,
-      fromBeginning: true,
+      fromBeginning: kafkaConfig.consumeFromBeginning,
     });
 
     this.logger.log(
-      `Live map updater listening on "${kafkaConfig.etaUpdatesTopic}" (group=${groupId})`,
+      `Live map updater listening on "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({
@@ -52,15 +43,23 @@ export class LiveMapUpdaterService implements OnModuleInit {
           return;
         }
 
+        if (kafkaConfig.processingDelayMs > 0) {
+          await sleep(kafkaConfig.processingDelayMs);
+        }
+
         const update = await this.schemas.decodeEta(message.value);
         const isNew = !this.latest.has(update.driver_id);
         this.latest.set(update.driver_id, update);
-        console.log(update.driver_id);
 
+        const lag = latencyMs(update.timestamp);
         this.logger.log(
-          `map ${isNew ? 'add' : 'upd'} driver=${update.driver_id} lat=${update.latitude.toFixed(5)} lon=${update.longitude.toFixed(5)} eta_s=${update.eta_seconds} drivers=${this.latest.size}`,
+          `map ${isNew ? 'add' : 'upd'} driver=${update.driver_id} lat=${update.latitude.toFixed(5)} lon=${update.longitude.toFixed(5)} eta_s=${update.eta_seconds} latency_ms=${lag} drivers=${this.latest.size}`,
         );
       },
     });
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

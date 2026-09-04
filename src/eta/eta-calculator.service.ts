@@ -5,6 +5,10 @@ import { SchemaRegistryService } from '../kafka/schema-registry.service';
 import { kafkaConfig } from '../kafka/kafka.config';
 import { GpsEvent } from '../kafka/gps-event';
 import { EtaUpdate } from '../kafka/eta-update';
+import {
+  attachRebalanceLogging,
+  latencyMs,
+} from '../kafka/consumer-observability';
 
 /** Cairo-ish box used to pick a stable fake destination per driver */
 const DEST_LAT_MIN = 29.95;
@@ -33,28 +37,15 @@ export class EtaCalculatorService implements OnModuleInit {
     const groupId = kafkaConfig.etaGroupId;
     const consumer = await this.kafka.createConsumer(groupId);
     const producer = await this.kafka.createProducer();
-
-    consumer.on(consumer.events.REBALANCING, () => {
-      this.logger.warn(`[${groupId}] rebalancing…`);
-    });
-
-    consumer.on(consumer.events.GROUP_JOIN, ({ payload }) => {
-      const assigned = payload.memberAssignment ?? {};
-      const summary = Object.entries(assigned)
-        .map(([topic, partitions]) => `${topic}=[${(partitions as number[]).join(', ')}]`)
-        .join(' ');
-      this.logger.log(
-        `[${groupId}] joined — member=${payload.memberId} assignment: ${summary || '(none)'}`,
-      );
-    });
+    attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
       topic: kafkaConfig.gpsEventsTopic,
-      fromBeginning: true,
+      fromBeginning: kafkaConfig.consumeFromBeginning,
     });
 
     this.logger.log(
-      `ETA calculator listening on "${kafkaConfig.gpsEventsTopic}" → "${kafkaConfig.etaUpdatesTopic}" (group=${groupId})`,
+      `ETA calculator listening on "${kafkaConfig.gpsEventsTopic}" → "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({
@@ -64,6 +55,10 @@ export class EtaCalculatorService implements OnModuleInit {
             `topic=${topic} partition=${partition} offset=${message.offset} empty value`,
           );
           return;
+        }
+
+        if (kafkaConfig.processingDelayMs > 0) {
+          await sleep(kafkaConfig.processingDelayMs);
         }
 
         const gps = await this.schemas.decode(message.value);
@@ -81,8 +76,9 @@ export class EtaCalculatorService implements OnModuleInit {
         });
 
         const meta = result[0];
+        const lag = latencyMs(gps.timestamp);
         this.logger.log(
-          `eta driver=${update.driver_id} distance_km=${update.distance_km.toFixed(2)} eta_s=${update.eta_seconds} → ${kafkaConfig.etaUpdatesTopic} p=${meta.partition} off=${meta.baseOffset}`,
+          `eta driver=${update.driver_id} distance_km=${update.distance_km.toFixed(2)} eta_s=${update.eta_seconds} latency_ms=${lag} → ${kafkaConfig.etaUpdatesTopic} p=${meta.partition} off=${meta.baseOffset}`,
         );
       },
     });
@@ -156,4 +152,8 @@ export class EtaCalculatorService implements OnModuleInit {
     }
     return hash;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

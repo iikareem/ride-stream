@@ -3,6 +3,10 @@ import { EachMessagePayload } from 'kafkajs';
 import { KafkaService } from '../kafka/kafka.service';
 import { SchemaRegistryService } from '../kafka/schema-registry.service';
 import { kafkaConfig } from '../kafka/kafka.config';
+import {
+  attachRebalanceLogging,
+  latencyMs,
+} from '../kafka/consumer-observability';
 
 @Injectable()
 export class GpsPrinterService implements OnModuleInit {
@@ -16,29 +20,15 @@ export class GpsPrinterService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     const groupId = `${kafkaConfig.clientId}-gps-printer`;
     const consumer = await this.kafka.createConsumer(groupId);
-
-    // Log rebalances so you can see which partitions this instance owns
-    consumer.on(consumer.events.REBALANCING, () => {
-      this.logger.warn(`[${groupId}] rebalancing…`);
-    });
-
-    consumer.on(consumer.events.GROUP_JOIN, ({ payload }) => {
-      const assigned = payload.memberAssignment ?? {};
-      const summary = Object.entries(assigned)
-        .map(([topic, partitions]) => `${topic}=[${(partitions as number[]).join(', ')}]`)
-        .join(' ');
-      this.logger.log(
-        `[${groupId}] joined — member=${payload.memberId} assignment: ${summary || '(none)'}`,
-      );
-    });
+    attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
       topic: kafkaConfig.gpsEventsTopic,
-      fromBeginning: true,
+      fromBeginning: kafkaConfig.consumeFromBeginning,
     });
 
     this.logger.log(
-      `Listening on topic "${kafkaConfig.gpsEventsTopic}" (group=${groupId}, Avro)`,
+      `Listening on topic "${kafkaConfig.gpsEventsTopic}" (group=${groupId}, Avro, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({
@@ -50,11 +40,20 @@ export class GpsPrinterService implements OnModuleInit {
           return;
         }
 
+        if (kafkaConfig.processingDelayMs > 0) {
+          await sleep(kafkaConfig.processingDelayMs);
+        }
+
         const event = await this.schemas.decode(message.value);
+        const lag = latencyMs(event.timestamp);
         this.logger.log(
-          `topic=${topic} partition=${partition} offset=${message.offset} key=${message.key?.toString()} driver=${event.driver_id} lat=${event.latitude.toFixed(5)} lon=${event.longitude.toFixed(5)} speed=${Number(event.speed_kmh).toFixed(1)} heading=${event.heading ?? 'null'} status=${event.status}`,
+          `topic=${topic} partition=${partition} offset=${message.offset} key=${message.key?.toString()} driver=${event.driver_id} lat=${event.latitude.toFixed(5)} lon=${event.longitude.toFixed(5)} speed=${Number(event.speed_kmh).toFixed(1)} heading=${event.heading ?? 'null'} status=${event.status} latency_ms=${lag}`,
         );
       },
     });
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
