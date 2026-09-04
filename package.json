@@ -12,6 +12,8 @@
     "start:producer:dev": "nest start --watch --entryFile producer/main",
     "start:consumer": "nest start --entryFile consumer/main",
     "start:consumer:dev": "nest start --watch --entryFile consumer/main",
+    "start:eta": "nest start --entryFile eta/main",
+    "start:eta:dev": "nest start --watch --entryFile eta/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest"
   },
