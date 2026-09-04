@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. Exactly-once-oriented processing and Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 3b — Live Map Updater (`eta-updates` → in-memory latest position + ETA). No HTTP yet.
+**Status:** Phase 3c — Latency tuning and rebalance behavior (observe `latency_ms`, tune fetch/session knobs, drill rebalances).
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts by implementing a realistic ride-sharing GPS pipeline.
 
@@ -104,7 +104,7 @@ ride-stream/
 ├── docs/
 │   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
 ├── src/
-│   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas
+│   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas, rebalance helpers
 │   ├── producer/               # GPS simulator worker
 │   ├── consumer/               # gps-printer consumer worker
 │   ├── eta/                    # ETA calculator worker
@@ -179,6 +179,13 @@ Copy `.env.example` to `.env`:
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
 | `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
+| `CONSUME_FROM_BEGINNING` | `true` | Replay earliest offsets (`false` = live tail only) |
+| `PROCESSING_DELAY_MS` | `0` | Artificial per-message sleep to grow lag |
+| `SESSION_TIMEOUT_MS` | `30000` | Broker kicks member if no heartbeat in this window |
+| `HEARTBEAT_INTERVAL_MS` | `3000` | How often the consumer heartbeats |
+| `REBALANCE_TIMEOUT_MS` | `60000` | Max time allowed for a rebalance |
+| `FETCH_MAX_WAIT_MS` | `500` | Broker may hold a fetch up to this long |
+| `FETCH_MIN_BYTES` | `1` | Min bytes before a fetch returns (`1` = ASAP) |
 
 Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, not in the Nest app.
 
@@ -201,36 +208,68 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 
 ---
 
-## Observing consumer rebalance
+## Latency and rebalance (Phase 3c)
 
-The printer consumer logs partition assignment on `GROUP_JOIN` / `REBALANCING`.
+Every consumer log line includes `latency_ms` = `now - event.timestamp` (producer wall clock embedded in the Avro payload). That is **end-to-end processing delay**, not Kafka’s official consumer-lag metric (offset lag lives in Kafka UI / `kafka-consumer-groups`).
+
+### Drill 1 — Live latency
+
+```bash
+# Prefer a clean live tail so latency_ms stays small
+CONSUME_FROM_BEGINNING=false npm run start:eta
+npm run start:producer
+```
+
+Expect `latency_ms` mostly in the tens–hundreds of ms when caught up. If you leave `CONSUME_FROM_BEGINNING=true` with a backlog, `latency_ms` will be huge until catch-up finishes — that is intentional teaching of lag.
+
+### Drill 2 — Grow lag on purpose
+
+```bash
+PROCESSING_DELAY_MS=2000 CONSUME_FROM_BEGINNING=false npm run start:eta
+npm run start:producer
+```
+
+Each message sleeps 2s → consumer cannot keep up → Kafka UI lag rises. Set delay back to `0` and watch lag drain.
+
+### Drill 3 — Rebalance (same groupId)
+
+Works for printer, ETA, or live-map — use the **same** script twice:
 
 ```bash
 # Terminal 1
-npm run start:consumer
+npm run start:eta
 
-# Terminal 2 — same groupId → Kafka splits partitions
-npm run start:consumer
+# Terminal 2 — same ridestream-eta group → Kafka splits the 6 partitions
+npm run start:eta
 ```
 
-You should see lines like:
+You should see:
 
 ```text
-[ridestream-gps-printer] rebalancing…
-[ridestream-gps-printer] joined — member=… assignment: gps-events=[0, 2, 4]
+[ridestream-eta] rebalancing — partitions being revoked/reassigned
+[ridestream-eta] joined — member=… assignment: gps-events=[0, 2, 4]
 ```
 
-Stop one process; the other takes the remaining partitions.
+Stop one process; the survivor rebalances and takes the rest. During rebalance, at-least-once delivery can mean a few **duplicate** processings (offsets not yet committed).
 
 Also useful:
 
 ```bash
 docker exec ridestream-broker kafka-consumer-groups \
   --bootstrap-server localhost:9092 \
-  --describe --group ridestream-gps-printer
+  --describe --group ridestream-eta
 ```
 
-Or open Kafka UI → Consumer Groups → `ridestream-gps-printer`.
+Or open Kafka UI → Consumer Groups.
+
+### What the knobs mean
+
+| Knob | Effect |
+| --- | --- |
+| `FETCH_MAX_WAIT_MS` / `FETCH_MIN_BYTES` | Fetch wait vs return-ASAP (micro-batching of pulls) |
+| `SESSION_TIMEOUT_MS` / `HEARTBEAT_INTERVAL_MS` | How fast a dead member is detected → rebalance starts |
+| `PROCESSING_DELAY_MS` | Simulates slow business logic → lag grows |
+| `CONSUME_FROM_BEGINNING` | Replay history vs live-only |
 
 ---
 
@@ -295,7 +334,7 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 
 - [x] ETA Calculator consumer group → `eta-updates` topic
 - [x] Live Map Updater consumer group (`eta-updates` → in-memory latest + ETA)
-- [ ] Latency tuning and rebalance behavior
+- [x] Latency tuning and rebalance behavior (`latency_ms`, fetch/session knobs, drills)
 
 ### Phase 4 — Stream processing
 

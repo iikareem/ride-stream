@@ -582,6 +582,36 @@ Yes for fresh data. Live-map only sees what ETA publishes to `eta-updates`. Star
 
 ---
 
+## J. Phase 3c — Latency and rebalance
+
+### Q54. What does `latency_ms` in the logs mean?
+
+`latency_ms = Date.now() - event.timestamp`. The producer stamps each GPS/ETA payload with wall-clock time; consumers subtract that when they finish handling the message. It answers: “how old is this event when I processed it?”
+
+It is **not** the same as Kafka consumer lag (how many offsets behind the log end). Offset lag is what Kafka UI and `kafka-consumer-groups --describe` show.
+
+---
+
+### Q55. Why can `latency_ms` be huge at startup?
+
+With `CONSUME_FROM_BEGINNING=true`, the group replays old messages. Their timestamps are minutes/hours ago → huge `latency_ms` until the consumer catches up. For a live drill, set `CONSUME_FROM_BEGINNING=false` so you only read new messages.
+
+---
+
+### Q56. What does `PROCESSING_DELAY_MS` teach?
+
+It fakes slow business logic (DB call, heavy CPU). If each message takes 2s and the producer is faster, **offset lag grows**. Clear the delay and lag drains. That is the same pattern you alert on in production.
+
+---
+
+### Q57. What happens in a rebalance?
+
+Same `groupId`, more/fewer members → coordinator revokes and reassigns partitions. Logs show `REBALANCING` then `GROUP_JOIN` with the new assignment. Processing pauses briefly; with auto-commit / at-least-once you may process the same offset twice around the boundary.
+
+`SESSION_TIMEOUT_MS` / `HEARTBEAT_INTERVAL_MS` control how quickly a crashed member is noticed (too low = flaky rebalances; too high = slow failover).
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -601,6 +631,19 @@ npm run start:eta            # gps-events → eta-updates
 npm run start:live-map       # eta-updates → in-memory Map
 npm run start:consumer       # optional GPS printer
 
+# Latency / lag drills
+CONSUME_FROM_BEGINNING=false npm run start:eta
+PROCESSING_DELAY_MS=2000 CONSUME_FROM_BEGINNING=false npm run start:eta
+
+# Rebalance drill — two terminals, same group
+npm run start:eta
+npm run start:eta
+
+# Lag describe
+docker exec ridestream-broker kafka-consumer-groups \
+  --bootstrap-server localhost:9092 \
+  --describe --group ridestream-eta
+
 # Schema Registry
 curl -s http://localhost:8081/subjects
 curl -s http://localhost:8081/subjects/gps-events-value/versions
@@ -612,4 +655,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 3b Live Map Updater (Q51–Q53). Add new Q&As as you go.*
+*Last updated after Phase 3c latency / rebalance (Q54–Q57). Add new Q&As as you go.*
