@@ -34,12 +34,14 @@ Drivers (producers)
         ▼
   Kafka broker (KRaft, single node for now)
         │
-        ├──▶ ETA Calculator          (consumer group)
-        ├──▶ Live Map Updater        (consumer group)
-        └──▶ Anomaly Detector        (stateful processing)
+        ├──▶ ETA Calculator          → eta-updates
+        ├──▶ Live Map Updater        → latest positions
+        └──▶ Anomaly Detector        → driver-anomalies
                     │
                     ▼
              Prometheus + Grafana
+
+  Capstone (Phase 8): Redis Pub/Sub → WebSocket live push to clients
 ```
 
 ### Phase 2 (current)
@@ -79,6 +81,8 @@ docker compose down && docker compose up -d
 | Broker | Confluent Kafka 7.9 (KRaft, single broker) |
 | Schema | Confluent Schema Registry + Avro |
 | Metrics (Phase 5) | Prometheus + Grafana |
+| Read model (Phase 8) | Redis (latest state + Pub/Sub) |
+| Live clients (Phase 8) | WebSocket push |
 | Local infra | Docker Compose |
 | Ops UI | Kafka UI (`localhost:8080`) |
 
@@ -269,8 +273,8 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 
 ### Phase 3 — Consumers
 
-- [ ] ETA Calculator consumer group
-- [ ] Live Map Updater consumer group
+- [ ] ETA Calculator consumer group → `eta-updates` topic
+- [ ] Live Map Updater consumer group (in-memory latest positions)
 - [ ] Latency tuning and rebalance behavior
 
 ### Phase 4 — Stream processing
@@ -296,6 +300,25 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 - [ ] 3-broker cluster, replication, `min.insync.replicas`
 - [ ] Broker failure and leader election drills
 
+### Phase 8 — Live clients (capstone)
+
+Push ride state to the browser in real time with **Redis Pub/Sub + WebSockets**.
+
+```text
+Kafka consumers  →  Redis (SET latest + PUBLISH update)
+                         │
+                         ▼
+              Nest subscribes (Pub/Sub)  →  WebSocket  →  live clients
+```
+
+- [ ] Redis in Docker Compose (keys for latest location/ETA + TTL)
+- [ ] Consumers **SET** latest state and **PUBLISH** on change (Pub/Sub)
+- [ ] Nest gateway subscribes to Redis and **pushes** over WebSocket
+- [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
+- [ ] Simple client UI that renders the live feed
+
+Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
+
 ---
 
 ## Design decisions
@@ -310,6 +333,8 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
 | Single broker first | Learn the full pipeline before cluster failure modes |
+| Redis + Pub/Sub (Phase 8) | Latest state in keys; PUBLISH triggers live fan-out |
+| WebSocket (Phase 8) | Push location / ETA / chat to clients in real time |
 
 ---
 

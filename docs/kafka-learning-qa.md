@@ -443,6 +443,101 @@ Either works. RideStream registers on app startup via `SchemaRegistryService.ens
 
 ---
 
+### Q41. Why register both v1 and v2? What does that simulate?
+
+Schema Registry keeps a **version history** per subject. Registering v1 then v2 simulates real time:
+
+| Time | Production story |
+| --- | --- |
+| Day 1 | Ship GPS events with v1 (no `heading`) |
+| Later | Product wants compass heading → register v2 (optional `heading`) |
+| Transition | Old and new clients may both exist for a while |
+
+Each Kafka message still uses **one** schema id. We produce with **v2**. Missing `heading` on old (v1) data becomes **`null`** via the field default — not “the whole event is undefined.”
+
+---
+
+### Q42. What other compatibility types are worth knowing?
+
+| Mode | Meaning | Typical upgrade order |
+| --- | --- | --- |
+| **BACKWARD** (RideStream) | New schema can read **old** data | Consumers first, then producers |
+| **FORWARD** | Old schema can read **new** data | Producers first; old consumers tolerate new fields |
+| **FULL** | Both BACKWARD + FORWARD | Strictest; hardest to evolve |
+| **NONE** | No checks | Avoid unless intentional |
+
+Also: `*_TRANSITIVE` modes require compatibility against **all** older versions, not only the previous one.
+
+---
+
+### Q43. If we only encode with v2, why register v1 at all?
+
+**You don’t need v1 for the app to run today** — only v2 is required on the wire.
+
+v1 is registered first as a **learning/demo of evolution**: Registry shows versions `[1, 2]` and proves BACKWARD accepted the change. If we registered only v2, producer/consumer would work the same, but the UI would show a single version with no visible history.
+
+---
+
+### Q44. Where does Schema Registry store schemas? Is it a database?
+
+Yes in spirit: a **catalog of schemas**. In Confluent’s stack it is usually **not** Postgres/MySQL. Schemas live in a Kafka topic (typically `_schemas`). Schema Registry is an HTTP API in front of that topic.
+
+In RideStream Compose there are **no volumes**, so Registry state dies with `docker compose down`. Next `up` is empty; the app re-registers v1/v2 on startup.
+
+---
+
+### Q45. Is Schema Registry format-agnostic (Protobuf, anything)?
+
+**Partly.** Confluent Schema Registry supports:
+
+- Avro  
+- Protobuf  
+- JSON Schema  
+
+Not arbitrary custom binary. Among those three it is format-flexible; it is still aimed at **Kafka event** schemas (Confluent wire format with schema id).
+
+---
+
+### Q46. Is Schema Registry only for Kafka producers/consumers, not gRPC?
+
+**For practical use: yes.** It belongs in the Kafka ecosystem (producers, consumers, Streams, Connect).
+
+gRPC service-to-service uses `.proto` files and stubs (or Buf), **not** Confluent Schema Registry. You *could* call the Registry HTTP API from any app, but that is not the normal design for request/response APIs.
+
+---
+
+### Q47. How do services share schemas for binary S2S communication (not Kafka)?
+
+Same idea (one source of truth for shape), different tools:
+
+| Approach | Typical for |
+| --- | --- |
+| Shared `.proto` / schema Git repo + versioned packages | gRPC, many companies |
+| Buf Schema Registry (or similar API registries) | Protobuf at scale, breaking-change checks |
+| Generated client SDKs from schemas | Polyglot microservices |
+| OpenAPI + codegen | REST/JSON |
+
+Rule of thumb:
+
+- **Kafka events** → Confluent Schema Registry  
+- **Service calls (gRPC/REST)** → protos/OpenAPI in repo or Buf-style registry  
+
+---
+
+## Phase 2 review letter
+
+You finished Phase 2 with a working mental model, not only working code.
+
+You can explain that Schema Registry is a shared catalog so Kafka producers and consumers agree on Avro shape by schema id, instead of shipping JSON forever. You know RideStream registers subject `gps-events-value`, stores schemas via the Registry (backed by Kafka’s `_schemas` topic in Confluent), and that your Docker setup is ephemeral without volumes.
+
+You understand schema evolution: v2 adds optional `heading` with default `null` under BACKWARD compatibility so a new reader can still decode old data. You also know registering v1 then v2 is a demo of history — the producer only encodes with v2 — and you can name FORWARD, FULL, and TRANSITIVE as related modes.
+
+You drew a clear boundary for interviews and design: Confluent Schema Registry is for Kafka event contracts (Avro/Protobuf/JSON Schema). Service-to-service gRPC shares schemas through `.proto` repos or Buf, not through this Registry. That distinction is the main conceptual win of Phase 2.
+
+Next learning target when you are ready: Phase 3 — separate consumer groups (ETA, live map) on the same Avro `gps-events` stream.
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -468,4 +563,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 2 (Avro + Schema Registry). Add new Q&As as you go.*
+*Last updated after Phase 2 Q&A catch-up (Q41–Q47 + review letter). Add new Q&As as you go.*
