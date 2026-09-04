@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { KafkaService } from '../kafka/kafka.service';
+import { SchemaRegistryService } from '../kafka/schema-registry.service';
 import { kafkaConfig } from '../kafka/kafka.config';
 import { DriverStatus, GpsEvent } from '../kafka/gps-event';
 
@@ -16,6 +17,7 @@ interface DriverState {
   latitude: number;
   longitude: number;
   status: DriverStatus;
+  heading: number;
 }
 
 @Injectable()
@@ -24,12 +26,15 @@ export class GpsProducerService implements OnModuleInit {
   private drivers: DriverState[] = [];
   private running = true;
 
-  constructor(private readonly kafka: KafkaService) {}
+  constructor(
+    private readonly kafka: KafkaService,
+    private readonly schemas: SchemaRegistryService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     this.drivers = this.seedDrivers(kafkaConfig.driverCount);
     this.logger.log(
-      `Starting GPS producer: ${this.drivers.length} drivers → topic "${kafkaConfig.gpsEventsTopic}"`,
+      `Starting GPS producer: ${this.drivers.length} drivers → topic "${kafkaConfig.gpsEventsTopic}" (Avro)`,
     );
 
     const producer = await this.kafka.createProducer();
@@ -52,20 +57,21 @@ export class GpsProducerService implements OnModuleInit {
       for (const driver of this.drivers) {
         this.nudge(driver);
         const event = this.toEvent(driver);
+        const value = await this.schemas.encode(event);
         const result = await producer.send({
           topic: kafkaConfig.gpsEventsTopic,
           messages: [
             {
               // Partition by driver_id so events stay ordered per driver
               key: driver.id,
-              value: JSON.stringify(event),
+              value,
             },
           ],
         });
 
         const meta = result[0];
         this.logger.log(
-          `sent driver=${driver.id} partition=${meta.partition} offset=${meta.baseOffset} speed=${event.speed_kmh.toFixed(1)}`,
+          `sent driver=${driver.id} partition=${meta.partition} offset=${meta.baseOffset} speed=${event.speed_kmh.toFixed(1)} heading=${event.heading?.toFixed(0) ?? 'null'}`,
         );
       }
 
@@ -79,6 +85,7 @@ export class GpsProducerService implements OnModuleInit {
       latitude: LAT_MIN + Math.random() * (LAT_MAX - LAT_MIN),
       longitude: LON_MIN + Math.random() * (LON_MAX - LON_MIN),
       status: STATUSES[Math.floor(Math.random() * STATUSES.length)],
+      heading: Math.random() * 360,
     }));
   }
 
@@ -93,6 +100,7 @@ export class GpsProducerService implements OnModuleInit {
       LON_MIN,
       LON_MAX,
     );
+    driver.heading = (driver.heading + (Math.random() - 0.5) * 20 + 360) % 360;
     if (Math.random() < 0.05) {
       driver.status = STATUSES[Math.floor(Math.random() * STATUSES.length)];
     }
@@ -106,6 +114,7 @@ export class GpsProducerService implements OnModuleInit {
       speed_kmh: 5 + Math.random() * 55,
       timestamp: Date.now(),
       status: driver.status,
+      heading: driver.heading,
     };
   }
 
