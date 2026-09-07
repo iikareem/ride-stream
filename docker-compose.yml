@@ -59,7 +59,7 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
       KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
 
-  # Creates gps-events and eta-updates once the broker is healthy.
+  # Creates gps-events, eta-updates, and driver-anomalies once the broker is healthy.
   init-topics:
     image: confluentinc/cp-kafka:7.9.0
     container_name: ridestream-init-topics
@@ -80,6 +80,75 @@ services:
           --partitions 6 \
           --replication-factor 1 \
           --config retention.ms=86400000
+        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
+          --topic driver-anomalies \
+          --partitions 6 \
+          --replication-factor 1 \
+          --config retention.ms=86400000
+        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
+          --topic driver-anomaly-windows \
+          --partitions 6 \
+          --replication-factor 1 \
+          --config retention.ms=86400000
+        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
+          --topic driver-anomaly-windows-hop \
+          --partitions 6 \
+          --replication-factor 1 \
+          --config retention.ms=86400000
+        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
+          --topic driver-anomalies-teleport \
+          --partitions 6 \
+          --replication-factor 1 \
+          --config retention.ms=86400000
+        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
+          --topic driver-anomalies-freeze \
+          --partitions 6 \
+          --replication-factor 1 \
+          --config retention.ms=86400000
         kafka-topics --bootstrap-server broker:29092 --list
         echo "Topics ready."
     restart: "no"
+
+  # Phase 4 Step 1 — ksqlDB server (SQL stream processing). No anomaly queries yet.
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:7.9.0
+    hostname: ksqldb-server
+    container_name: ridestream-ksqldb-server
+    depends_on:
+      broker:
+        condition: service_healthy
+      schema-registry:
+        condition: service_started
+    ports:
+      - "8088:8088"
+    environment:
+      KSQL_CONFIG_DIR: /etc/ksql
+      KSQL_BOOTSTRAP_SERVERS: broker:29092
+      KSQL_HOST_NAME: ksqldb-server
+      KSQL_LISTENERS: http://0.0.0.0:8088
+      KSQL_CACHE_MAX_BYTES_BUFFERING: 0
+      KSQL_KSQL_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: "true"
+      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: "true"
+      # Single-broker local cluster
+      KSQL_KSQL_SINK_REPLICAS: 1
+      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
+      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/info"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 40s
+
+  ksqldb-cli:
+    image: confluentinc/cp-ksqldb-cli:7.9.0
+    container_name: ridestream-ksqldb-cli
+    depends_on:
+      ksqldb-server:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    tty: true
+    volumes:
+      - ./ksql:/ksql
