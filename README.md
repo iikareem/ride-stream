@@ -1,12 +1,12 @@
 # RideStream
 
-RideStream is a real-time GPS streaming pipeline that models the backend of a ride-sharing platform. Simulated drivers publish location events into Apache Kafka; NestJS workers consume them through independent consumer groups to derive ETAs, maintain live positions, and detect anomalies.
+RideStream is a real-time GPS streaming pipeline that models the backend of a ride-sharing platform. Simulated drivers publish location events into Apache Kafka; NestJS workers consume them through independent consumer groups to derive ETAs and maintain live positions. **Stream processing for anomalies uses ksqlDB** (SQL on Kafka), not Nest business logic.
 
-Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. Exactly-once-oriented processing and Prometheus/Grafana observability complete the operational story.
+Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 3c — Latency tuning and rebalance behavior (observe `latency_ms`, tune fetch/session knobs, drill rebalances).
+**Status:** Phase 4 — Stream processing with **ksqlDB** (anomaly detection via continuous SQL on `gps-events`). Nest stays the producer/ETA/live-map path; ksqlDB owns windowed/stateful anomaly queries.
 
-> **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts by implementing a realistic ride-sharing GPS pipeline.
+> **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
 ---
 
@@ -17,7 +17,7 @@ What this project exercises end to end:
 - Partitioning strategy and message keys
 - Consumer groups, rebalancing, and offset commits
 - Avro serialization with Schema Registry and schema evolution
-- Stateful processing for anomaly detection
+- Stateful / windowed stream processing with **ksqlDB** (anomalies)
 - Consumer lag monitoring and fault-injection drills
 
 The full pipeline is proven on one broker first. Multi-broker clustering follows once that path is solid.
@@ -29,33 +29,43 @@ The full pipeline is proven on one broker first. Multi-broker clustering follows
 ### Target pipeline
 
 ```
-Drivers (producers)
+Drivers (Nest producers)
         │
         ▼
   Kafka broker (KRaft, single node for now)
         │
-        ├──▶ ETA Calculator          → eta-updates
-        ├──▶ Live Map Updater        → latest positions
-        └──▶ Anomaly Detector        → driver-anomalies
+        ├──▶ Nest ETA Calculator     → eta-updates
+        ├──▶ Nest Live Map Updater   → in-memory latest (+ ETA)
+        └──▶ ksqlDB                  → driver-anomalies
                     │
                     ▼
-             Prometheus + Grafana
+             Prometheus + Grafana (Phase 5)
 
   Capstone (Phase 8): Redis Pub/Sub → WebSocket live push to clients
 ```
 
-### Phase 3 (current)
+### Why ksqlDB (Phase 4)
+
+| Approach | Role in RideStream |
+| --- | --- |
+| **Nest + KafkaJS** | Produce GPS, ETA, live-map read model, optional print/consume of anomalies |
+| **ksqlDB** | Continuous SQL on topics: filters, tumbling/hopping windows, aggregates → `driver-anomalies` |
+| Kafka Streams / Flink | Not used here; noted as heavier JVM alternatives for production |
+
+Nest does **not** embed ksqlDB. ksqlDB runs as its own Docker service, reads/writes Kafka topics; Nest only talks to topics (and optionally the ksqlDB REST API for admin).
+
+### Phase 3 (done) + Phase 4 (next)
 
 ```
 GPS producer ──Avro──▶ gps-events
                           │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               
-   gps-printer      ridestream-eta
-   (log only)       (haversine ETA)
-                          │
-                          ▼
-                     eta-updates (Avro)
+          ┌───────────────┼───────────────┬────────────────┐
+          ▼               ▼               ▼                
+   gps-printer      ridestream-eta      ksqlDB
+   (log only)       (haversine ETA)   (SQL anomalies)
+                          │               │
+                          ▼               ▼
+                     eta-updates    driver-anomalies
                           │
                           ▼
                   ridestream-live-map
@@ -68,7 +78,8 @@ GPS producer ──Avro──▶ gps-events
 | `ridestream-gps-printer` | Decodes and logs GPS (independent group) |
 | `ridestream-eta` | Decodes GPS, assigns a stable fake destination per driver, publishes Avro ETA to `eta-updates` |
 | `ridestream-live-map` | Consumes `eta-updates`, upserts latest position + ETA per `driver_id` in memory (no HTTP yet) |
-| Topics | `gps-events`, `eta-updates` (6 partitions each via `init-topics`) |
+| **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events` → `driver-anomalies` (optional EOS) |
+| Topics | `gps-events`, `eta-updates`, later `driver-anomalies` |
 
 If Kafka was already running before `eta-updates` was added, recreate topics:
 
@@ -88,6 +99,7 @@ docker compose up -d --force-recreate init-topics
 | Kafka client | KafkaJS |
 | Broker | Confluent Kafka 7.9 (KRaft, single broker) |
 | Schema | Confluent Schema Registry + Avro |
+| Stream SQL (Phase 4) | **ksqlDB** (Docker; continuous queries on Kafka topics) |
 | Metrics (Phase 5) | Prometheus + Grafana |
 | Read model (Phase 8) | Redis (latest state + Pub/Sub) |
 | Live clients (Phase 8) | WebSocket push |
@@ -100,9 +112,10 @@ docker compose up -d --force-recreate init-topics
 
 ```
 ride-stream/
-├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, topic init
+├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, topic init (+ ksqlDB in Phase 4)
 ├── docs/
 │   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
+├── ksql/                       # Phase 4: ksqlDB statements (streams, anomaly queries)
 ├── src/
 │   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas, rebalance helpers
 │   ├── producer/               # GPS simulator worker
@@ -115,7 +128,7 @@ ride-stream/
 └── package.json
 ```
 
-Workers are isolated Nest processes (not one monolith handling produce + consume). That keeps consumer groups easy to scale and reason about.
+Nest workers are isolated processes (produce / ETA / live-map). **ksqlDB is a separate JVM service** in Compose: Nest never imports it — both sides only share Kafka topics.
 
 ---
 
@@ -336,11 +349,16 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 - [x] Live Map Updater consumer group (`eta-updates` → in-memory latest + ETA)
 - [x] Latency tuning and rebalance behavior (`latency_ms`, fetch/session knobs, drills)
 
-### Phase 4 — Stream processing
+### Phase 4 — Stream processing (**ksqlDB**)
 
-- [ ] Anomaly detector (speed spikes, GPS freeze, teleport, route deviation)
-- [ ] Hopping windows + stateful stores
-- [ ] Exactly-once-oriented configuration
+Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-events`.
+
+- [ ] Add ksqlDB server (+ CLI) to Docker Compose; wire Schema Registry
+- [ ] `ksql/` statements: `CREATE STREAM` over Avro `gps-events`
+- [ ] Anomaly queries → `driver-anomalies` topic (speed spikes first; then freeze / teleport where SQL fits)
+- [ ] Windowed aggregates (tumbling / hopping) for spike counts
+- [ ] Optional `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
+- [ ] Optional Nest consumer that logs/forwards anomalies (still at-least-once unless idempotent)
 
 ### Phase 5 — Observability
 
@@ -389,6 +407,8 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 | JSON then Avro | Phase 1 proved the path with JSON; Phase 2 switched to Avro + Registry |
 | Avro + BACKWARD | Optional fields with defaults (e.g. `heading`) let readers use new schemas on old data |
 | Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
+| **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; easy CV-visible Confluent skill; Nest stays TypeScript workers for ETA/live-map |
+| Not Kafka Streams / Flink here | Heavier JVM apps; overkill for this learning repo — document as production alternatives |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
 | Single broker first | Learn the full pipeline before cluster failure modes |

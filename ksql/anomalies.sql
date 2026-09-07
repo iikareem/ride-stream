@@ -1,0 +1,19 @@
+-- Phase 4: ksqlDB statements for RideStream
+-- Run after ksqlDB is up (Compose) via ksql CLI or REST.
+-- Nest does not execute these — ksqlDB reads/writes Kafka topics only.
+--
+-- Wired in a follow-up: Compose services + CREATE STREAM over Avro gps-events.
+
+-- CREATE STREAM gps_events WITH (
+--   KAFKA_TOPIC='gps-events',
+--   VALUE_FORMAT='AVRO'
+-- );
+--
+-- CREATE STREAM speed_spikes WITH (
+--   KAFKA_TOPIC='driver-anomalies',
+--   VALUE_FORMAT='JSON'
+-- ) AS
+-- SELECT driver_id, speed_kmh, 'SPEED_SPIKE' AS type, timestamp
+-- FROM gps_events
+-- WHERE speed_kmh > 120
+-- EMIT CHANGES;
