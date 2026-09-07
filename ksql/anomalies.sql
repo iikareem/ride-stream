@@ -1,19 +1,7 @@
--- Phase 4: ksqlDB statements for RideStream
--- Run after ksqlDB is up (Compose) via ksql CLI or REST.
--- Nest does not execute these — ksqlDB reads/writes Kafka topics only.
---
--- Wired in a follow-up: Compose services + CREATE STREAM over Avro gps-events.
-
--- CREATE STREAM gps_events WITH (
---   KAFKA_TOPIC='gps-events',
---   VALUE_FORMAT='AVRO'
--- );
---
--- CREATE STREAM speed_spikes WITH (
---   KAFKA_TOPIC='driver-anomalies',
---   VALUE_FORMAT='JSON'
--- ) AS
--- SELECT driver_id, speed_kmh, 'SPEED_SPIKE' AS type, timestamp
--- FROM gps_events
--- WHERE speed_kmh > 120
--- EMIT CHANGES;
+-- Phase 4 anomaly queries
+-- Step 1: Compose + topics
+-- Step 2: 01_gps_stream.sql
+-- Step 3: 02_speed_spikes.sql
+-- Step 4: 03_spike_windows.sql
+-- Step 5: 04_freeze_teleport.sql (teleport join + freeze window)
+-- Step 6 (next): exactly_once_v2 on ksqlDB
