@@ -668,3 +668,9 @@ A **table** `latest_gps` keeps the last lat/lon per `DRIVER_ID`. A **stream** qu
 ### Q59. What stays hard in SQL?
 
 Route deviation, map-matching, and rich multi-signal scoring need trip state Nest (or Flink) can hold more easily. ksqlDB is best for filters, windows, and simple last-point joins.
+
+---
+
+### Q60. What does `exactly_once_v2` cover in RideStream?
+
+ksqlDB’s persistent queries (speed spikes, windows, teleport, freeze) use Kafka transactions so a failure does not double-apply that query’s output the at-least-once way. Nest apps reading those topics are still usually at-least-once unless you design for idempotency. Existing queries must be recreated after enabling EOS on the server.

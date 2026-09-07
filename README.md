@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 4 Step 5 — ksqlDB freeze + teleport heuristics (SQL where it fits).
+**Status:** Phase 4 Step 6 — ksqlDB `exactly_once_v2` (EOS) for persistent queries.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -237,6 +237,32 @@ PRINT 'driver-anomalies-freeze' FROM BEGINNING;
 | Filters + tumbling/hopping aggregates | Rich per-driver state beyond SQL joins |
 
 Source: [`ksql/04_freeze_teleport.sql`](ksql/04_freeze_teleport.sql).
+
+### Phase 4 Step 6 — exactly-once (EOS) on ksqlDB
+
+Persistent queries use Kafka Streams transactions:
+
+```yaml
+# docker-compose.yml → ksqldb-server
+KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE: exactly_once_v2
+```
+
+```bash
+docker compose up -d --force-recreate ksqldb-server ksqldb-cli
+curl -s http://localhost:8088/info
+```
+
+**Important:** EOS applies to **new** persistent queries after restart. Queries created earlier keep their old guarantee — drop and re-`RUN SCRIPT` if you want them on EOS too.
+
+Optional per-session override before creating a query:
+
+```sql
+SET 'processing.guarantee' = 'exactly_once_v2';
+```
+
+EOS here = ksqlDB **read → process → write** as one transactional unit. Nest consumers of `driver-anomalies*` are still typically **at-least-once** unless you add idempotency.
+
+Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state.log.*` for a single-node cluster.
 
 ---
 
@@ -509,7 +535,7 @@ Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-e
 - [x] Anomaly queries → `driver-anomalies` topic (speed spikes first; then freeze / teleport where SQL fits)
 - [x] Windowed aggregates (tumbling / hopping) for spike counts
 - [x] Freeze + teleport heuristics (`04_freeze_teleport.sql`)
-- [ ] Optional `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
+- [x] `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
 - [ ] Optional Nest consumer that logs/forwards anomalies (still at-least-once unless idempotent)
 
 ### Phase 5 — Observability
