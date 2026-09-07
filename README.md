@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 4 — Stream processing with **ksqlDB** (anomaly detection via continuous SQL on `gps-events`). Nest stays the producer/ETA/live-map path; ksqlDB owns windowed/stateful anomaly queries.
+**Status:** Phase 4 Step 5 — ksqlDB freeze + teleport heuristics (SQL where it fits).
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -79,14 +79,164 @@ GPS producer ──Avro──▶ gps-events
 | `ridestream-eta` | Decodes GPS, assigns a stable fake destination per driver, publishes Avro ETA to `eta-updates` |
 | `ridestream-live-map` | Consumes `eta-updates`, upserts latest position + ETA per `driver_id` in memory (no HTTP yet) |
 | **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events` → `driver-anomalies` (optional EOS) |
-| Topics | `gps-events`, `eta-updates`, later `driver-anomalies` |
+| Topics | `gps-events`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
 
-If Kafka was already running before `eta-updates` was added, recreate topics:
+### Phase 4 Step 1 — ksqlDB infra
+
+ksqlDB is up; anomaly SQL comes in later steps.
+
+```bash
+docker compose up -d
+docker compose ps
+# Recreate topics if the stack predates driver-anomalies:
+docker compose up -d --force-recreate init-topics
+
+# Health
+curl -s http://localhost:8088/info
+
+# Interactive CLI (SHOW TOPICS; then Ctrl+D to exit)
+docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
+```
+
+| Endpoint | URL |
+| --- | --- |
+| ksqlDB REST | `http://localhost:8088` |
+| Kafka UI | `http://localhost:8080` |
+| Schema Registry | `http://localhost:8081` |
+
+SQL files live under [`ksql/`](ksql/) (mounted into the CLI container at `/ksql`).
+
+### Phase 4 Step 2 — `CREATE STREAM gps_events`
+
+Registers the existing Avro topic so ksqlDB can query it. Nest must have produced at least once (so subject `gps-events-value` exists in Schema Registry).
+
+```bash
+# 1) Infra + producer (registers Avro schema)
+docker compose up -d
+npm run start:producer
+
+# 2) Apply stream definition
+docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
+```
+
+In the CLI:
+
+```sql
+RUN SCRIPT '/ksql/01_gps_stream.sql';
+
+SHOW STREAMS;
+DESCRIBE gps_events;
+
+SET 'auto.offset.reset' = 'earliest';
+SELECT DRIVER_ID, LATITUDE, LONGITUDE, SPEED_KMH, STATUS
+FROM gps_events
+EMIT CHANGES
+LIMIT 5;
+```
+
+Expect rows while the Nest producer is running. Stop the push query with `Ctrl+C`. Statement source: [`ksql/01_gps_stream.sql`](ksql/01_gps_stream.sql).
+
+### Phase 4 Step 3 — speed spikes → `driver-anomalies`
+
+Persistent query: keep reading `gps_events`, filter high speed, write JSON to topic `driver-anomalies`.
+
+```bash
+npm run start:producer
+docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
+```
+
+```sql
+-- if Step 2 not applied yet:
+RUN SCRIPT '/ksql/01_gps_stream.sql';
+
+RUN SCRIPT '/ksql/02_speed_spikes.sql';
+
+SHOW STREAMS;
+SHOW QUERIES;
+
+SET 'auto.offset.reset' = 'earliest';
+PRINT 'driver-anomalies' FROM BEGINNING;
+-- or: SELECT * FROM speed_spikes EMIT CHANGES LIMIT 10;
+```
+
+Threshold in the SQL is **`SPEED_KMH > 50`** so the current Nest producer (speeds ~5–60) can generate hits. Raise it to `120` later for a stricter rule.
+
+Source: [`ksql/02_speed_spikes.sql`](ksql/02_speed_spikes.sql).
+
+### Phase 4 Step 4 — windowed spike counts
+
+Step 3 emits **every** fast GPS point. Step 4 **counts** how many fast points a driver had in a time window, and only emits when the count is high enough (`HAVING COUNT(*) >= 2`).
+
+| Window | Meaning | Output topic |
+| --- | --- | --- |
+| **Tumbling** `SIZE 1 MINUTE` | Non-overlapping 1-minute buckets | `driver-anomaly-windows` |
+| **Hopping** `SIZE 1 MINUTE, ADVANCE BY 15 SECONDS` | Overlapping windows (slide every 15s) | `driver-anomaly-windows-hop` |
+
+These are **`CREATE TABLE … AS SELECT`** (aggregates), not streams — each key holds the latest count for that window.
+
+```bash
+docker compose up -d --force-recreate init-topics   # creates the two window topics
+npm run start:producer
+docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
+```
+
+```sql
+-- recreate (old tables lack DRIVER_ID in the value)
+DROP TABLE IF EXISTS spike_counts_tumbling DELETE TOPIC;
+DROP TABLE IF EXISTS spike_counts_hopping DELETE TOPIC;
+-- then: docker compose up -d --force-recreate init-topics
+
+RUN SCRIPT '/ksql/03_spike_windows.sql';
+
+SHOW TABLES;
+SHOW QUERIES;
+
+PRINT 'driver-anomaly-windows' FROM BEGINNING;
+-- PRINT 'driver-anomaly-windows-hop' FROM BEGINNING;
+```
+
+JSON value includes `DRIVER_ID_VALUE` (ksqlDB 7.9 cannot alias both key and value as `DRIVER_ID`). The Kafka key may still look binary for windows.
+
+Source: [`ksql/03_spike_windows.sql`](ksql/03_spike_windows.sql).
+
+### Phase 4 Step 5 — freeze + teleport (SQL heuristics)
+
+More anomaly types **in ksqlDB**, still no Nest detection logic.
+
+| Query | Pattern | Output |
+| --- | --- | --- |
+| `latest_gps` | Table: last lat/lon/ts per driver | changelog (internal / derived) |
+| `gps_teleports` | Stream ⋈ table: `GEO_DISTANCE` to previous point > 0.25 km | `driver-anomalies-teleport` |
+| `gps_freeze` | 2-min tumbling: almost no lat/lon span + low avg speed | `driver-anomalies-freeze` |
 
 ```bash
 docker compose up -d --force-recreate init-topics
-# or: docker compose down && docker compose up -d
+npm run start:producer
+docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
 ```
+
+```sql
+RUN SCRIPT '/ksql/04_freeze_teleport.sql';
+SHOW STREAMS;
+SHOW TABLES;
+SHOW QUERIES;
+
+PRINT 'driver-anomalies-teleport' FROM BEGINNING;
+PRINT 'driver-anomalies-freeze' FROM BEGINNING;
+```
+
+**Demo note:** the Nest producer only nudges ~0.002°. Real teleports/freezes may be rare until you temporarily inject jumps or stuck coordinates in the producer.
+
+#### What SQL fits vs what belongs in Nest later
+
+| Fits ksqlDB well | Harder / better in Nest (or Flink) later |
+| --- | --- |
+| Speed threshold, window counts | Route deviation (needs trip polyline / map match) |
+| Jump vs last point (`GEO_DISTANCE`) | Multi-signal ML / scoring |
+| “Barely moved for N minutes” freeze heuristic | Exact consecutive-sample physics with custom state machines |
+| Filters + tumbling/hopping aggregates | Rich per-driver state beyond SQL joins |
+
+Source: [`ksql/04_freeze_teleport.sql`](ksql/04_freeze_teleport.sql).
 
 ---
 
@@ -105,6 +255,7 @@ docker compose up -d --force-recreate init-topics
 | Live clients (Phase 8) | WebSocket push |
 | Local infra | Docker Compose |
 | Ops UI | Kafka UI (`localhost:8080`) |
+| ksqlDB UI/REST | `localhost:8088` |
 
 ---
 
@@ -353,10 +504,11 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 
 Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-events`.
 
-- [ ] Add ksqlDB server (+ CLI) to Docker Compose; wire Schema Registry
-- [ ] `ksql/` statements: `CREATE STREAM` over Avro `gps-events`
-- [ ] Anomaly queries → `driver-anomalies` topic (speed spikes first; then freeze / teleport where SQL fits)
-- [ ] Windowed aggregates (tumbling / hopping) for spike counts
+- [x] Add ksqlDB server (+ CLI) to Docker Compose; wire Schema Registry; create `driver-anomalies` topic
+- [x] `ksql/` statements: `CREATE STREAM` over Avro `gps-events`
+- [x] Anomaly queries → `driver-anomalies` topic (speed spikes first; then freeze / teleport where SQL fits)
+- [x] Windowed aggregates (tumbling / hopping) for spike counts
+- [x] Freeze + teleport heuristics (`04_freeze_teleport.sql`)
 - [ ] Optional `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
 - [ ] Optional Nest consumer that logs/forwards anomalies (still at-least-once unless idempotent)
 

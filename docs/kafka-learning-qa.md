@@ -656,3 +656,15 @@ open http://localhost:8080
 ---
 
 *Last updated after Phase 3c latency / rebalance (Q54–Q57). Add new Q&As as you go.*
+
+---
+
+## K. Phase 4 Step 5 — freeze / teleport in ksqlDB
+
+### Q58. How does teleport detection work without Nest?
+
+A **table** `latest_gps` keeps the last lat/lon per `DRIVER_ID`. A **stream** query joins each new GPS event to that table and uses `GEO_DISTANCE(...)` — if the jump is large and the event is newer, emit `TELEPORT` to `driver-anomalies-teleport`.
+
+### Q59. What stays hard in SQL?
+
+Route deviation, map-matching, and rich multi-signal scoring need trip state Nest (or Flink) can hold more easily. ksqlDB is best for filters, windows, and simple last-point joins.
