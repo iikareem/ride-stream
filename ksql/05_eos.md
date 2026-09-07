@@ -1,0 +1,17 @@
+-- Phase 4 Step 6 — Exactly-once (EOS) on ksqlDB
+--
+-- Server default is set in docker-compose.yml:
+--   KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE=exactly_once_v2
+--
+-- That applies to NEW persistent queries after ksqlDB restart.
+-- Existing queries keep the guarantee they were created with.
+--
+-- Optional (CLI session — next query only):
+--   SET 'processing.guarantee' = 'exactly_once_v2';
+--
+-- Verify after recreate:
+--   SHOW QUERIES;
+--   -- inspect query config / logs; broker already has transaction state topics
+--
+-- Scope: EOS covers ksqlDB's consume → process → produce path.
+-- Nest consumers of driver-anomalies* remain at-least-once unless made idempotent.

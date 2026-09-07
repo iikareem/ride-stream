@@ -3,5 +3,6 @@
 -- Step 2: 01_gps_stream.sql
 -- Step 3: 02_speed_spikes.sql
 -- Step 4: 03_spike_windows.sql
--- Step 5: 04_freeze_teleport.sql (teleport join + freeze window)
--- Step 6 (next): exactly_once_v2 on ksqlDB
+-- Step 5: 04_freeze_teleport.sql
+-- Step 6: EOS — see 05_eos.md + KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE in Compose
+-- Step 7 (next): Nest anomaly printer
