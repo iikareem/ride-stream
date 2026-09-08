@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Consumer lag, offsets, topic metrics (via Kafka protocol — no Nest code)
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+        labels:
+          cluster: ridestream

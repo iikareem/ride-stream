@@ -1,0 +1,21 @@
+groups:
+  - name: ridestream-kafka-lag
+    rules:
+      # Fire when any consumer group falls behind on a topic
+      - alert: ConsumerGroupLagHigh
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 50
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High lag for {{ $labels.consumergroup }} on {{ $labels.topic }}"
+          description: "Lag is {{ $value }} messages (threshold 50 for 1m). Try PROCESSING_DELAY_MS drill or scale the group."
+
+      - alert: ConsumerGroupLagCritical
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 500
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical lag for {{ $labels.consumergroup }} on {{ $labels.topic }}"
+          description: "Lag is {{ $value }} messages."
