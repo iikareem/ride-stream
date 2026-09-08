@@ -35,8 +35,9 @@ export class EtaCalculatorService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     const groupId = kafkaConfig.etaGroupId;
+    const transactionalId = kafkaConfig.etaTransactionalId;
     const consumer = await this.kafka.createConsumer(groupId);
-    const producer = await this.kafka.createProducer();
+    const producer = await this.kafka.createTransactionalProducer(transactionalId);
     attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
@@ -45,10 +46,12 @@ export class EtaCalculatorService implements OnModuleInit {
     });
 
     this.logger.log(
-      `ETA calculator listening on "${kafkaConfig.gpsEventsTopic}" → "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
+      `ETA calculator EOS listening on "${kafkaConfig.gpsEventsTopic}" → "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, transactionalId=${transactionalId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({
+      // Offsets committed only inside the producer transaction (sendOffsets)
+      autoCommit: false,
       eachMessage: async ({ topic, partition, message }: EachMessagePayload) => {
         if (!message.value) {
           this.logger.warn(
@@ -65,21 +68,47 @@ export class EtaCalculatorService implements OnModuleInit {
         const update = this.toEtaUpdate(gps);
         const value = await this.schemas.encodeEta(update);
 
-        const result = await producer.send({
-          topic: kafkaConfig.etaUpdatesTopic,
-          messages: [
-            {
-              key: update.driver_id,
-              value,
-            },
-          ],
-        });
+        // Next offset to consume after this message (Kafka commit convention)
+        const nextOffset = (Number(message.offset) + 1).toString();
 
-        const meta = result[0];
-        const lag = latencyMs(gps.timestamp);
-        this.logger.log(
-          `eta driver=${update.driver_id} distance_km=${update.distance_km.toFixed(2)} eta_s=${update.eta_seconds} latency_ms=${lag} → ${kafkaConfig.etaUpdatesTopic} p=${meta.partition} off=${meta.baseOffset}`,
-        );
+        const transaction = await producer.transaction();
+        try {
+          const result = await transaction.send({
+            topic: kafkaConfig.etaUpdatesTopic,
+            messages: [
+              {
+                key: update.driver_id,
+                value,
+              },
+            ],
+          });
+
+          await transaction.sendOffsets({
+            consumerGroupId: groupId,
+            topics: [
+              {
+                topic,
+                partitions: [{ partition, offset: nextOffset }],
+              },
+            ],
+          });
+
+          await transaction.commit();
+
+          const meta = result[0];
+          const lag = latencyMs(gps.timestamp);
+          this.logger.log(
+            `eta txn commit driver=${update.driver_id} distance_km=${update.distance_km.toFixed(2)} eta_s=${update.eta_seconds} latency_ms=${lag} → ${kafkaConfig.etaUpdatesTopic} p=${meta.partition} off=${meta.baseOffset} (acked gps ${topic} p=${partition} next_off=${nextOffset})`,
+          );
+        } catch (err) {
+          await transaction.abort();
+          this.logger.error(
+            `eta txn abort topic=${topic} partition=${partition} offset=${message.offset}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          throw err;
+        }
       },
     });
   }
