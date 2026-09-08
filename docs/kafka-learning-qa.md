@@ -668,6 +668,18 @@ Logs show `eta txn commit … (acked gps … next_off=…)`.
 
 ---
 
+## L. Phase 5 — Observability
+
+### Q67. Do we add Nest metrics code for Phase 5?
+
+No. **kafka-exporter** talks to the broker and exposes Prometheus metrics (including `kafka_consumergroup_lag`). Prometheus scrapes on an interval; Grafana queries Prometheus. Broker JMX (`9101`) remains available for JVM tooling.
+
+### Q68. How do you demo lag alerts?
+
+Run ETA with `PROCESSING_DELAY_MS=2000`, keep the producer fast, open Grafana (`localhost:3000`) and Prometheus Alerts (`localhost:9090/alerts`). Lag should rise; rules fire after the configured `for` duration.
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -711,4 +723,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Nest ETA EOS / idempotent producer (Q61–Q66).*
+*Last updated after Phase 5 observability (Q67–Q68).*

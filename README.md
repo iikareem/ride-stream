@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 4 done (ksqlDB anomalies + EOS). Nest anomaly printer skipped — same pattern as gps-printer; use Kafka UI / `PRINT` instead.
+**Status:** Phase 5 — Observability (kafka-exporter → Prometheus → Grafana + lag alerts). No Nest code.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -276,12 +276,15 @@ Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state
 | Broker | Confluent Kafka 7.9 (KRaft, single broker) |
 | Schema | Confluent Schema Registry + Avro |
 | Stream SQL (Phase 4) | **ksqlDB** (Docker; continuous queries on Kafka topics) |
-| Metrics (Phase 5) | Prometheus + Grafana |
+| Metrics (Phase 5) | kafka-exporter + Prometheus + Grafana |
 | Read model (Phase 8) | Redis (latest state + Pub/Sub) |
 | Live clients (Phase 8) | WebSocket push |
 | Local infra | Docker Compose |
 | Ops UI | Kafka UI (`localhost:8080`) |
 | ksqlDB UI/REST | `localhost:8088` |
+| Prometheus | `localhost:9090` |
+| Grafana | `localhost:3000` (admin / admin) |
+| kafka-exporter | `localhost:9308/metrics` |
 
 ---
 
@@ -289,7 +292,11 @@ Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state
 
 ```
 ride-stream/
-├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, topic init (+ ksqlDB in Phase 4)
+├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, ksqlDB, monitoring
+├── monitoring/                 # Phase 5: Prometheus + Grafana + lag alerts
+│   ├── prometheus.yml
+│   ├── alerts.yml
+│   └── grafana/
 ├── docs/
 │   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
 ├── ksql/                       # Phase 4: ksqlDB statements (streams, anomaly queries)
@@ -305,7 +312,7 @@ ride-stream/
 └── package.json
 ```
 
-Nest workers are isolated processes (produce / ETA / live-map). **ksqlDB is a separate JVM service** in Compose: Nest never imports it — both sides only share Kafka topics.
+Nest workers are isolated processes (produce / ETA / live-map). **ksqlDB** and **Prometheus/Grafana** are separate Compose services — no Nest metrics code required for Phase 5.
 
 ---
 
@@ -539,11 +546,31 @@ Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-e
 - [x] `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
 - [x] Nest anomaly printer — **skipped** (same as gps-printer; verify with Kafka UI / `PRINT 'driver-anomalies'`)
 
-### Phase 5 — Observability
+### Phase 5 — Observability (done)
 
-- [ ] JMX / Prometheus metrics
-- [ ] Grafana dashboards
-- [ ] Consumer lag alerts
+Infra only: **kafka-exporter** scrapes consumer lag via the Kafka protocol; **Prometheus** pulls every 15s; **Grafana** dashboards + Prometheus alert rules. Broker still exposes JMX on `9101` for optional JVM tooling; lag alerts use the exporter (no Nest code).
+
+```bash
+docker compose up -d
+open http://localhost:3000          # Grafana — admin / admin
+# Dashboard: RideStream → RideStream Kafka
+open http://localhost:9090          # Prometheus
+open http://localhost:9090/alerts   # lag alert rules
+curl -s http://localhost:9308/metrics | grep kafka_consumergroup_lag
+```
+
+**Lag drill:** slow ETA and watch Grafana climb:
+
+```bash
+PROCESSING_DELAY_MS=2000 CONSUME_FROM_BEGINNING=false npm run start:eta
+npm run start:producer
+```
+
+Alert rules (see [`monitoring/alerts.yml`](monitoring/alerts.yml)): warn if lag `> 50` for 1m; critical if `> 500` for 2m.
+
+- [x] Kafka metrics into Prometheus (via kafka-exporter; broker JMX on `9101`)
+- [x] Grafana dashboards (provisioned RideStream Kafka)
+- [x] Consumer lag alerts (Prometheus rules)
 
 ### Phase 6 — Fault tolerance
 
