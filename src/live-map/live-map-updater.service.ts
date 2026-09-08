@@ -22,7 +22,10 @@ export class LiveMapUpdaterService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     const groupId = kafkaConfig.liveMapGroupId;
-    const consumer = await this.kafka.createConsumer(groupId);
+    const consumer = await this.kafka.createConsumer(groupId, {
+      // Only see ETA messages from committed transactions
+      readCommitted: true,
+    });
     attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
@@ -31,7 +34,7 @@ export class LiveMapUpdaterService implements OnModuleInit {
     });
 
     this.logger.log(
-      `Live map updater listening on "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
+      `Live map updater listening on "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, isolation=read_committed, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({
