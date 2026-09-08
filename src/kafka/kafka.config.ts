@@ -4,6 +4,9 @@ export const kafkaConfig = {
   gpsEventsTopic: process.env.GPS_EVENTS_TOPIC ?? 'gps-events',
   etaUpdatesTopic: process.env.ETA_UPDATES_TOPIC ?? 'eta-updates',
   etaGroupId: process.env.ETA_GROUP_ID ?? 'ridestream-eta',
+  /** Stable id for ETA EOS transactions (one live ETA process per id). */
+  etaTransactionalId:
+    process.env.ETA_TRANSACTIONAL_ID ?? 'ridestream-eta-producer',
   liveMapGroupId: process.env.LIVE_MAP_GROUP_ID ?? 'ridestream-live-map',
   schemaRegistryUrl:
     process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',
