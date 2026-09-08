@@ -612,6 +612,62 @@ Same `groupId`, more/fewer members → coordinator revokes and reassigns partiti
 
 ---
 
+## K. Phase 4 — ksqlDB anomalies + Nest ETA EOS
+
+### Q58. How does teleport detection work without Nest?
+
+A **table** `latest_gps` keeps the last lat/lon per `DRIVER_ID`. A **stream** query joins each new GPS event to that table and uses `GEO_DISTANCE(...)` — if the jump is large and the event is newer, emit `TELEPORT` to `driver-anomalies-teleport`.
+
+### Q59. What stays hard in SQL?
+
+Route deviation, map-matching, and rich multi-signal scoring need trip state Nest (or Flink) can hold more easily. ksqlDB is best for filters, windows, and simple last-point joins.
+
+### Q60. What does `exactly_once_v2` cover in RideStream?
+
+ksqlDB’s persistent queries (speed spikes, windows, teleport, freeze) use Kafka transactions so a failure does not double-apply that query’s output the at-least-once way. Nest apps reading those topics are still usually at-least-once unless you design for idempotency. Existing queries must be recreated after enabling EOS on the server.
+
+### Q61. Idempotent producer vs `transactional.id`?
+
+**Idempotent** (`idempotent: true`): broker gives the producer a PID and **sequence numbers** per partition so network retries don’t append the same record twice. No `transactional.id` required.
+
+**Transactional** (`transactional.id`): stronger — multi-write atomicity + **zombie fencing**. GPS producer uses idempotent only; **ETA** uses a transactional producer: send `eta-updates` + `sendOffsets` for the GPS consumer group, then `commit` (or `abort`). Live-map reads `eta-updates` with `readUncommitted: false` (read committed) so it only sees committed ETA messages.
+
+### Q62. If `idempotent` is true, sequences are used — otherwise not?
+
+Yes. With `idempotent: true`, the broker tracks a producer id (PID) and a **sequence number per partition**; retried produces with the same seq are dropped. With `idempotent: false`, that protocol is off and retries can append duplicates.
+
+### Q63. What does `maxInFlightRequests` mean?
+
+How many produce requests may be outstanding (sent, waiting for ack) at once. Higher → more pipelining/throughput; lower → simpler under failure. For idempotent producers Kafka requires **`maxInFlightRequests ≤ 5`**. RideStream GPS uses `5`; ETA transactional producer uses `1` for simpler txn ordering.
+
+### Q64. What is `ETA_TRANSACTIONAL_ID` and why cache one producer?
+
+It is Kafka’s **`transactional.id`** for the ETA writer (default `ridestream-eta-producer`). Kafka requires it for `producer.transaction()`. The same id is reused across restarts for **zombie fencing** (old instance’s commits are rejected). We keep one producer instance in a `Map` keyed by that id — do not create a new transactional producer per message. Only one live ETA process should use that id.
+
+### Q65. Why is `autoCommit: false` on ETA? Can auto-commit fail after a successful send?
+
+Yes. With auto-commit you can:
+
+1. Produce ETA successfully  
+2. Crash before the GPS offset is committed → restart reprocesses → **duplicate ETA**  
+
+Or commit the offset then fail before produce → **lost ETA**.  
+
+So produce and “I processed this GPS” are not atomic. ETA turns auto-commit off and commits offsets only inside the transaction via `sendOffsets` + `commit`.
+
+### Q66. What is tightly coupled inside one ETA transaction?
+
+```text
+begin txn
+  → send eta-updates
+  → sendOffsets (gps-events group, next offset)
+  → commit   // both succeed together, or abort both
+```
+
+Logs show `eta txn commit … (acked gps … next_off=…)`.
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -627,8 +683,8 @@ docker compose up -d --force-recreate init-topics
 
 # Apps
 npm run start:producer
-npm run start:eta            # gps-events → eta-updates
-npm run start:live-map       # eta-updates → in-memory Map
+npm run start:eta            # gps-events → eta-updates (Nest EOS txn)
+npm run start:live-map       # eta-updates → in-memory Map (read committed)
 npm run start:consumer       # optional GPS printer
 
 # Latency / lag drills
@@ -655,30 +711,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 3c latency / rebalance (Q54–Q57). Add new Q&As as you go.*
-
----
-
-## K. Phase 4 Step 5 — freeze / teleport in ksqlDB
-
-### Q58. How does teleport detection work without Nest?
-
-A **table** `latest_gps` keeps the last lat/lon per `DRIVER_ID`. A **stream** query joins each new GPS event to that table and uses `GEO_DISTANCE(...)` — if the jump is large and the event is newer, emit `TELEPORT` to `driver-anomalies-teleport`.
-
-### Q59. What stays hard in SQL?
-
-Route deviation, map-matching, and rich multi-signal scoring need trip state Nest (or Flink) can hold more easily. ksqlDB is best for filters, windows, and simple last-point joins.
-
----
-
-### Q60. What does `exactly_once_v2` cover in RideStream?
-
-ksqlDB’s persistent queries (speed spikes, windows, teleport, freeze) use Kafka transactions so a failure does not double-apply that query’s output the at-least-once way. Nest apps reading those topics are still usually at-least-once unless you design for idempotency. Existing queries must be recreated after enabling EOS on the server.
-
----
-
-### Q61. Idempotent producer vs `transactional.id`?
-
-**Idempotent** (`idempotent: true`): broker gives the producer a PID and **sequence numbers** per partition so network retries don’t append the same record twice. No `transactional.id` required.
-
-**Transactional** (`transactional.id`): stronger — multi-write atomicity + **zombie fencing**. GPS producer uses idempotent only; **ETA** uses a transactional producer: send `eta-updates` + `sendOffsets` for the GPS consumer group, then `commit` (or `abort`). Live-map reads `eta-updates` with `isolationLevel=read_committed` so it only sees committed ETA messages.
+*Last updated after Nest ETA EOS / idempotent producer (Q61–Q66).*
