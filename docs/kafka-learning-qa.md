@@ -674,3 +674,11 @@ Route deviation, map-matching, and rich multi-signal scoring need trip state Nes
 ### Q60. What does `exactly_once_v2` cover in RideStream?
 
 ksqlDB’s persistent queries (speed spikes, windows, teleport, freeze) use Kafka transactions so a failure does not double-apply that query’s output the at-least-once way. Nest apps reading those topics are still usually at-least-once unless you design for idempotency. Existing queries must be recreated after enabling EOS on the server.
+
+---
+
+### Q61. Idempotent producer vs `transactional.id`?
+
+**Idempotent** (`idempotent: true`): broker gives the producer a PID and **sequence numbers** per partition so network retries don’t append the same record twice. No `transactional.id` required.
+
+**Transactional** (`transactional.id`): stronger — multi-write atomicity + **zombie fencing**. GPS producer uses idempotent only; **ETA** uses a transactional producer: send `eta-updates` + `sendOffsets` for the GPS consumer group, then `commit` (or `abort`). Live-map reads `eta-updates` with `isolationLevel=read_committed` so it only sees committed ETA messages.

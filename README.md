@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 4 Step 6 — ksqlDB `exactly_once_v2` (EOS) for persistent queries.
+**Status:** Phase 4 done (ksqlDB anomalies + EOS). Nest anomaly printer skipped — same pattern as gps-printer; use Kafka UI / `PRINT` instead.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -76,7 +76,7 @@ GPS producer ──Avro──▶ gps-events
 | --- | --- |
 | Producer | Simulates N drivers; Avro GPS to `gps-events` |
 | `ridestream-gps-printer` | Decodes and logs GPS (independent group) |
-| `ridestream-eta` | Decodes GPS, assigns a stable fake destination per driver, publishes Avro ETA to `eta-updates` |
+| `ridestream-eta` | Decodes GPS, **transactional** publish of Avro ETA to `eta-updates` (EOS: produce + offset commit) |
 | `ridestream-live-map` | Consumes `eta-updates`, upserts latest position + ETA per `driver_id` in memory (no HTTP yet) |
 | **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events` → `driver-anomalies` (optional EOS) |
 | Topics | `gps-events`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
@@ -365,6 +365,7 @@ Copy `.env.example` to `.env`:
 | `GPS_EVENTS_TOPIC` | `gps-events` | GPS topic name |
 | `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
 | `ETA_GROUP_ID` | `ridestream-eta` | ETA consumer group id |
+| `ETA_TRANSACTIONAL_ID` | `ridestream-eta-producer` | ETA EOS transactional.id (one live ETA instance) |
 | `LIVE_MAP_GROUP_ID` | `ridestream-live-map` | Live map consumer group id |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
@@ -536,7 +537,7 @@ Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-e
 - [x] Windowed aggregates (tumbling / hopping) for spike counts
 - [x] Freeze + teleport heuristics (`04_freeze_teleport.sql`)
 - [x] `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
-- [ ] Optional Nest consumer that logs/forwards anomalies (still at-least-once unless idempotent)
+- [x] Nest anomaly printer — **skipped** (same as gps-printer; verify with Kafka UI / `PRINT 'driver-anomalies'`)
 
 ### Phase 5 — Observability
 
@@ -548,7 +549,7 @@ Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-e
 
 - [ ] Broker restart and offset resume
 - [ ] Slow consumer / lag growth
-- [ ] Duplicate injection vs idempotent producer
+- [x] Duplicate injection vs idempotent producer (idempotent Nest producer enabled; drill still optional)
 
 ### Phase 7 — Cluster (future)
 
@@ -585,6 +586,8 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 | JSON then Avro | Phase 1 proved the path with JSON; Phase 2 switched to Avro + Registry |
 | Avro + BACKWARD | Optional fields with defaults (e.g. `heading`) let readers use new schemas on old data |
 | Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
+| Idempotent Nest GPS producer | KafkaJS `idempotent: true` → PID + sequence numbers; retries don’t duplicate |
+| Transactional Nest ETA | `transactional.id` + `send` + `sendOffsets` + `commit`; live-map uses `read_committed` |
 | **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; easy CV-visible Confluent skill; Nest stays TypeScript workers for ETA/live-map |
 | Not Kafka Streams / Flink here | Heavier JVM apps; overkill for this learning repo — document as production alternatives |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
