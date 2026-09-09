@@ -3,6 +3,7 @@ import { SchemaRegistry, SchemaType } from '@kafkajs/confluent-schema-registry';
 import { kafkaConfig } from './kafka.config';
 import { GpsEvent } from './gps-event';
 import { EtaUpdate } from './eta-update';
+import { RiderGpsEvent } from './rider-gps-event';
 import {
   GPS_EVENT_SCHEMA_V1,
   GPS_EVENT_SCHEMA_V2,
@@ -12,6 +13,10 @@ import {
   ETA_UPDATE_SCHEMA_V1,
   ETA_UPDATE_VALUE_SUBJECT,
 } from './schemas/eta-update.avsc';
+import {
+  RIDER_GPS_EVENT_SCHEMA_V1,
+  RIDER_GPS_EVENT_VALUE_SUBJECT,
+} from './schemas/rider-gps-event.avsc';
 
 @Injectable()
 export class SchemaRegistryService implements OnModuleInit {
@@ -21,6 +26,7 @@ export class SchemaRegistryService implements OnModuleInit {
   });
 
   private gpsSchemaId: number | null = null;
+  private riderGpsSchemaId: number | null = null;
   private etaSchemaId: number | null = null;
 
   async onModuleInit(): Promise<void> {
@@ -28,7 +34,7 @@ export class SchemaRegistryService implements OnModuleInit {
   }
 
   /**
-   * Registers GPS v1 then v2, and EtaUpdate v1, so subjects exist before produce/consume.
+   * Registers GPS, Rider GPS, and EtaUpdate schemas so subjects exist before produce/consume.
    */
   async ensureSchemasRegistered(): Promise<void> {
     const gpsV1 = await this.registry.register(
@@ -52,6 +58,18 @@ export class SchemaRegistryService implements OnModuleInit {
     this.gpsSchemaId = gpsV2.id;
     this.logger.log(
       `Registered ${GPS_EVENT_VALUE_SUBJECT} v2 schema id=${gpsV2.id} (optional heading)`,
+    );
+
+    const riderV1 = await this.registry.register(
+      {
+        type: SchemaType.AVRO,
+        schema: JSON.stringify(RIDER_GPS_EVENT_SCHEMA_V1),
+      },
+      { subject: RIDER_GPS_EVENT_VALUE_SUBJECT },
+    );
+    this.riderGpsSchemaId = riderV1.id;
+    this.logger.log(
+      `Registered ${RIDER_GPS_EVENT_VALUE_SUBJECT} v1 schema id=${riderV1.id}`,
     );
 
     const etaV1 = await this.registry.register(
@@ -84,6 +102,24 @@ export class SchemaRegistryService implements OnModuleInit {
 
   async decode(buffer: Buffer): Promise<GpsEvent> {
     return (await this.registry.decode(buffer)) as GpsEvent;
+  }
+
+  async encodeRider(event: RiderGpsEvent): Promise<Buffer> {
+    if (this.riderGpsSchemaId === null) {
+      await this.ensureSchemasRegistered();
+    }
+    return this.registry.encode(this.riderGpsSchemaId!, {
+      rider_id: event.rider_id,
+      latitude: event.latitude,
+      longitude: event.longitude,
+      timestamp: event.timestamp,
+      status: event.status,
+      heading: event.heading ?? null,
+    });
+  }
+
+  async decodeRider(buffer: Buffer): Promise<RiderGpsEvent> {
+    return (await this.registry.decode(buffer)) as RiderGpsEvent;
   }
 
   async encodeEta(update: EtaUpdate): Promise<Buffer> {

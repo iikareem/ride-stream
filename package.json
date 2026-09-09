@@ -10,6 +10,8 @@
     "start:dev": "nest start --watch",
     "start:producer": "nest start --entryFile producer/main",
     "start:producer:dev": "nest start --watch --entryFile producer/main",
+    "start:rider-producer": "nest start --entryFile rider-producer/main",
+    "start:rider-producer:dev": "nest start --watch --entryFile rider-producer/main",
     "start:consumer": "nest start --entryFile consumer/main",
     "start:consumer:dev": "nest start --watch --entryFile consumer/main",
     "start:eta": "nest start --entryFile eta/main",

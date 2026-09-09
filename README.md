@@ -79,7 +79,7 @@ GPS producer ──Avro──▶ gps-events
 | `ridestream-eta` | Decodes GPS, **transactional** publish of Avro ETA to `eta-updates` (EOS: produce + offset commit) |
 | `ridestream-live-map` | Consumes `eta-updates`, upserts latest position + ETA per `driver_id` in memory (no HTTP yet) |
 | **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events` → `driver-anomalies` (optional EOS) |
-| Topics | `gps-events`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
+| Topics | `gps-events`, `gps-events-rider`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
 
 ### Phase 4 Step 1 — ksqlDB infra
 
@@ -303,6 +303,7 @@ ride-stream/
 ├── src/
 │   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas, rebalance helpers
 │   ├── producer/               # GPS simulator worker
+│   ├── rider-producer/         # Rider GPS simulator → gps-events-rider
 │   ├── consumer/               # gps-printer consumer worker
 │   ├── eta/                    # ETA calculator worker
 │   ├── live-map/               # Live map updater (in-memory latest positions)
@@ -369,13 +370,15 @@ Copy `.env.example` to `.env`:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated bootstrap servers |
-| `GPS_EVENTS_TOPIC` | `gps-events` | GPS topic name |
+| `GPS_EVENTS_TOPIC` | `gps-events` | Driver GPS topic name |
+| `GPS_EVENTS_RIDER_TOPIC` | `gps-events-rider` | Rider GPS topic name |
 | `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
 | `ETA_GROUP_ID` | `ridestream-eta` | ETA consumer group id |
 | `ETA_TRANSACTIONAL_ID` | `ridestream-eta-producer` | ETA EOS transactional.id (one live ETA instance) |
 | `LIVE_MAP_GROUP_ID` | `ridestream-live-map` | Live map consumer group id |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
+| `RIDER_COUNT` | `10` | Simulated riders in the rider producer |
 | `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
 | `CONSUME_FROM_BEGINNING` | `true` | Replay earliest offsets (`false` = live tail only) |
 | `PROCESSING_DELAY_MS` | `0` | Artificial per-message sleep to grow lag |
@@ -393,8 +396,10 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 
 | Script | Purpose |
 | --- | --- |
-| `npm run start:producer` | GPS event producer |
-| `npm run start:producer:dev` | Producer with watch mode |
+| `npm run start:producer` | Driver GPS event producer (`gps-events`) |
+| `npm run start:producer:dev` | Driver producer with watch mode |
+| `npm run start:rider-producer` | Rider GPS event producer (`gps-events-rider`) |
+| `npm run start:rider-producer:dev` | Rider producer with watch mode |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
@@ -589,8 +594,9 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
               Nest subscribes (Pub/Sub)  →  WebSocket  →  live clients
 ```
 
-- [ ] Redis in Docker Compose (keys for latest location/ETA + TTL)
-- [ ] Consumers **SET** latest state and **PUBLISH** on change (Pub/Sub)
+- [x] Rider GPS topic + producer (`gps-events-rider`, Avro `rider_id`)
+- [ ] Redis in Docker Compose (GEO for riders + Pub/Sub)
+- [ ] Consumers **GEOADD** riders and fan-out driver updates via Pub/Sub
 - [ ] Nest gateway subscribes to Redis and **pushes** over WebSocket
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [ ] Simple client UI that renders the live feed

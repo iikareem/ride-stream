@@ -2,6 +2,8 @@ export const kafkaConfig = {
   clientId: process.env.KAFKA_CLIENT_ID ?? 'ridestream',
   brokers: (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(','),
   gpsEventsTopic: process.env.GPS_EVENTS_TOPIC ?? 'gps-events',
+  gpsEventsRiderTopic:
+    process.env.GPS_EVENTS_RIDER_TOPIC ?? 'gps-events-rider',
   etaUpdatesTopic: process.env.ETA_UPDATES_TOPIC ?? 'eta-updates',
   etaGroupId: process.env.ETA_GROUP_ID ?? 'ridestream-eta',
   /** Stable id for ETA EOS transactions (one live ETA process per id). */
@@ -11,6 +13,7 @@ export const kafkaConfig = {
   schemaRegistryUrl:
     process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',
   driverCount: Number(process.env.DRIVER_COUNT ?? '10'),
+  riderCount: Number(process.env.RIDER_COUNT ?? '10'),
 
   /**
    * When true, consumers replay from the earliest offset (catch-up).
