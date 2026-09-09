@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 5 — Observability (kafka-exporter → Prometheus → Grafana + lag alerts). No Nest code.
+**Status:** Phase 6 — Fault tolerance (broker restart / offset resume, lag growth, idempotent producer). Next: Phase 7 live clients (Redis + WebSocket).
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -41,7 +41,7 @@ Drivers (Nest producers)
                     ▼
              Prometheus + Grafana (Phase 5)
 
-  Capstone (Phase 8): Redis Pub/Sub → WebSocket live push to clients
+  Capstone (Phase 7): Redis Pub/Sub → WebSocket live push to clients
 ```
 
 ### Why ksqlDB (Phase 4)
@@ -277,8 +277,8 @@ Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state
 | Schema | Confluent Schema Registry + Avro |
 | Stream SQL (Phase 4) | **ksqlDB** (Docker; continuous queries on Kafka topics) |
 | Metrics (Phase 5) | kafka-exporter + Prometheus + Grafana |
-| Read model (Phase 8) | Redis (latest state + Pub/Sub) |
-| Live clients (Phase 8) | WebSocket push |
+| Read model (Phase 7) | Redis (latest state + Pub/Sub) |
+| Live clients (Phase 7) | WebSocket push |
 | Local infra | Docker Compose |
 | Ops UI | Kafka UI (`localhost:8080`) |
 | ksqlDB UI/REST | `localhost:8088` |
@@ -572,18 +572,13 @@ Alert rules (see [`monitoring/alerts.yml`](monitoring/alerts.yml)): warn if lag 
 - [x] Grafana dashboards (provisioned RideStream Kafka)
 - [x] Consumer lag alerts (Prometheus rules)
 
-### Phase 6 — Fault tolerance
+### Phase 6 — Fault tolerance (done)
 
-- [ ] Broker restart and offset resume
-- [ ] Slow consumer / lag growth
+- [x] Broker restart and offset resume
+- [x] Slow consumer / lag growth
 - [x] Duplicate injection vs idempotent producer (idempotent Nest producer enabled; drill still optional)
 
-### Phase 7 — Cluster (future)
-
-- [ ] 3-broker cluster, replication, `min.insync.replicas`
-- [ ] Broker failure and leader election drills
-
-### Phase 8 — Live clients (capstone)
+### Phase 7 — Live clients (capstone)
 
 Push ride state to the browser in real time with **Redis Pub/Sub + WebSockets**.
 
@@ -599,6 +594,11 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 - [ ] Nest gateway subscribes to Redis and **pushes** over WebSocket
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [ ] Simple client UI that renders the live feed
+
+### Phase 8 — Cluster (future)
+
+- [ ] 3-broker cluster, replication, `min.insync.replicas`
+- [ ] Broker failure and leader election drills
 
 Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 
@@ -620,8 +620,8 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
 | Single broker first | Learn the full pipeline before cluster failure modes |
-| Redis + Pub/Sub (Phase 8) | Latest state in keys; PUBLISH triggers live fan-out |
-| WebSocket (Phase 8) | Push location / ETA / chat to clients in real time |
+| Redis + Pub/Sub (Phase 7) | Latest state in keys; PUBLISH triggers live fan-out |
+| WebSocket (Phase 7) | Push location / ETA / chat to clients in real time |
 
 ---
 

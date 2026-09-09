@@ -548,7 +548,7 @@ Different **jobs** need different **offsets**. The printer and ETA calculator bo
 
 ### Q49. Why publish ETA to `eta-updates` instead of only logging?
 
-So ETA becomes its own **event stream**. Other services (live UI, notifications, Phase 8 WebSocket) can subscribe later without changing the ETA worker. No database required for learning — Kafka carries the derived result.
+So ETA becomes its own **event stream**. Other services (live UI, notifications, Phase 7 WebSocket) can subscribe later without changing the ETA worker. No database required for learning — Kafka carries the derived result.
 
 ---
 
@@ -572,7 +572,7 @@ Kafka still keeps the raw GPS history on `gps-events`; live-map only needs the l
 
 ### Q52. Why keep it in memory instead of publishing another topic?
 
-Live map is a **read model** (current state), not a new event stream. The updater collapses `eta-updates` into “latest per `driver_id`.” Later Phase 8 moves this `Map` into Redis for multi-process / WebSocket sharing. No HTTP endpoint in this phase — logs prove the upsert works.
+Live map is a **read model** (current state), not a new event stream. The updater collapses `eta-updates` into “latest per `driver_id`.” Later Phase 7 moves this `Map` into Redis for multi-process / WebSocket sharing. No HTTP endpoint in this phase — logs prove the upsert works.
 
 ---
 
