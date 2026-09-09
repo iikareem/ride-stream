@@ -657,6 +657,104 @@ Run ETA with `PROCESSING_DELAY_MS=2000`, keep the producer fast, open Grafana (`
 
 ---
 
+## L. Phase 7 — Redis Pub/Sub + WebSocket gateway
+
+### Q66. Where do I add logic to a payload before the client sees it?
+
+In the gateway's Redis message handler, or earlier in the worker that publishes. The handler registered by `onUserChannelMessage` receives the raw string, so you can parse, filter, enrich, or drop it before calling `server.to(channel).emit(...)`.
+
+Keeping heavy business rules (GEOSEARCH, matching) in the publishing worker and leaving the gateway for delivery-shaped concerns (strip fields, rename events) is the cleaner split.
+
+### Q67. With the Socket.IO Redis adapter, can the gateway still change the payload?
+
+No. With the adapter, Socket.IO receives the packet from Redis and writes it to the room's sockets itself. No `@SubscribeMessage` or gateway hook runs on that inbound path — the library pushes straight to the client. `onAnyOutgoing` can observe the send, but it is too late to reshape it.
+
+### Q68. Why does RideStream use Redis Pub/Sub instead of the Socket.IO Redis adapter?
+
+Pub/Sub keeps delivery explicit: the gateway subscribes to `user:{id}`, receives every message in Nest, and emits deliberately. That gives a transform point (Q66) and makes a plain `PUBLISH` from Redis Insight work as a test.
+
+The adapter is the idiomatic way to scale Socket.IO rooms across processes, but its channels and packet format are internal — you cannot publish to them by hand, and you cannot intercept delivery. The adapter version of the gateway is still in `main`'s history (before the Pub/Sub switch) if you want to compare.
+
+### Q69. Why does `RedisService` keep a `channelRefCount` map?
+
+Because one Redis `SUBSCRIBE` per channel is enough, but several sockets can belong to the same user. The count tracks how many sockets currently want `user:{id}`:
+
+- first join: `0 → 1` → actually `SUBSCRIBE`
+- second join: `1 → 2` → no second subscribe
+- first disconnect: `2 → 1` → stay subscribed
+- last disconnect: `1 → 0` → `UNSUBSCRIBE`
+
+Without it, the first tab to close would unsubscribe the channel and silently break the tabs still open.
+
+### Q70. What is `messageHandler` and why can it be null?
+
+It is the bridge from ioredis to the gateway. `RedisService` only knows that a `message` event arrived; it does not import Socket.IO. The gateway registers a callback through `onUserChannelMessage`, and the service invokes it with `(channel, message)`.
+
+It starts as `null` because the service is constructed before the gateway registers, so any message arriving early is ignored rather than crashing.
+
+### Q71. What is `afterInit` actually doing?
+
+Registering, not receiving. Nest calls `afterInit` once the WebSocket server exists (so `this.server` is safe to use), and the gateway uses that moment to install its Redis handler. The arrow function passed in runs later, once per delivered `PUBLISH`:
+
+```text
+gateway starts → afterInit stores the callback
+client joins   → SUBSCRIBE user:rider-001
+PUBLISH        → ioredis "message" → stored callback runs
+                 → parse → server.to('user:rider-001').emit('drivers', payload)
+```
+
+### Q72. Are two browser tabs the same socket?
+
+No. Each tab opens its own Socket.IO connection, so each is a separate socket with its own id. They share only the `userId` — and therefore the same room name and the same Redis channel, which is why the refcount in Q69 exists.
+
+### Q73. How does one emit reach both tabs?
+
+Both sockets called `join` with the same `userId`, so both are members of room `user:rider-001`. `server.to('user:rider-001').emit('drivers', payload)` fans out to every socket in that room, so both tabs receive it.
+
+### Q74. Where does JWT fit in this flow?
+
+At the handshake, not in Kafka or Redis. The client passes a token when it connects, the gateway verifies it once, and the verified claim (`sub`) becomes `client.data.userId`. `join` should use that server-side value rather than trusting a `userId` sent in the payload.
+
+Kafka messages and worker `PUBLISH` calls stay unauthenticated — they are internal service-to-service traffic on a private network.
+
+### Q75. Does the client send the access token with every event?
+
+No. The token authenticates the **connection**. After the handshake succeeds, the socket carries an established identity and normal events (`join`, and inbound `drivers`) need no token.
+
+You send one again only on reconnect, or after expiry when the server rejects the connection and the client fetches a fresh token.
+
+### Q76. Can the token go in a header?
+
+On the handshake, yes — `Authorization: Bearer <token>` works from Postman or a Node client. Browsers generally cannot set custom headers on a WebSocket upgrade, so browser clients should use Socket.IO's `auth: { token }` option instead.
+
+---
+
+## M. Repo structure decisions
+
+### Q77. Why rename `gps-events` to `gps-events-driver`?
+
+Symmetry with `gps-events-rider`. Once riders had their own stream, a topic called `gps-events` no longer said whose GPS it carried. The Schema Registry subject moved with it (`gps-events-driver-value`), since TopicNameStrategy derives the subject from the topic name.
+
+### Q78. Why was the live-map worker removed?
+
+It collapsed `eta-updates` into an in-memory `Map` with no HTTP endpoint and nothing reading it. Phase 7 replaces that role with Redis (shared across processes) plus the WebSocket gateway, so the worker was dead code. `eta-updates` is untouched — a future consumer can pick it up.
+
+### Q79. Why group folders by domain instead of a top-level producer/ and consumer/ split?
+
+A role-based split breaks on workers that do both. ETA consumes `gps-events-driver` and produces `eta-updates`; the gateway is neither a Kafka producer nor consumer. Grouping by domain first keeps those honest:
+
+```text
+src/
+  drivers/{producer, consumer/{printer, eta}}
+  riders/{producer, consumer/{geo}}
+  gateway/
+  shared/{kafka, redis}
+```
+
+Each consumer job owns a folder, so adding one (for example nearby-driver fan-out) does not disturb the others. ETA sits under `consumer/` because that is its primary role; it still publishes a derived topic.
+
+---
+
 ## Quick command cheat sheet
 
 ```bash
@@ -699,4 +797,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after removing live-map (Q51–Q65).*
+*Last updated after Phase 7 gateway Pub/Sub and the domain restructure (Q66–Q79).*
