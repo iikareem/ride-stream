@@ -413,6 +413,7 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:rider-geo:dev` | Rider GEO consumer with watch mode |
 | `npm run start:gateway` | WebSocket gateway (Socket.IO on `GATEWAY_PORT`) |
 | `npm run start:gateway:dev` | WebSocket gateway with watch mode |
+| `npm run emit:test` | One-shot redis-emitter → `user:{id}` / event `drivers` (no Kafka) |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |

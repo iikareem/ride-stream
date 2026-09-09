@@ -1,26 +1,23 @@
 import { INestApplication, Logger } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
-import { createShardedAdapter } from '@socket.io/redis-adapter';
+import { createAdapter } from '@socket.io/redis-adapter';
 import { ServerOptions } from 'socket.io';
 import Redis from 'ioredis';
 import { redisConfig } from '../redis/redis.config';
 
 /**
- * Sharded Redis adapter (Redis 7+ SPUBLISH/SSUBSCRIBE).
- * With subscriptionMode "dynamic", a gateway only receives emits for rooms
- * it actually has — so 2–3 gateway processes don't all see every push.
+ * Classic Redis adapter — pairs with @socket.io/redis-emitter
+ * (PUBLISH + Socket.IO packet format). Use this for multi-gateway + emitter.
  */
 export class RedisIoAdapter extends IoAdapter {
   private readonly logger = new Logger(RedisIoAdapter.name);
-  private adapterConstructor: ReturnType<typeof createShardedAdapter> | null =
-    null;
+  private adapterConstructor: ReturnType<typeof createAdapter> | null = null;
 
   constructor(app: INestApplication) {
     super(app);
   }
 
   async connectToRedis(): Promise<void> {
-    // Subscriber clients must use maxRetriesPerRequest: null (ioredis + Socket.IO)
     const pubClient = new Redis(redisConfig.url, {
       maxRetriesPerRequest: null,
     });
@@ -28,21 +25,14 @@ export class RedisIoAdapter extends IoAdapter {
 
     await Promise.all([whenReady(pubClient), whenReady(subClient)]);
 
-    // Learning: log when Redis delivers a sharded pub/sub message to THIS gateway.
-    // (Adapter still handles the real decode → socket delivery.)
-    subClient.on('smessageBuffer', (channel: Buffer, message: Buffer) => {
+    subClient.on('message', (channel: string, message: string) => {
       this.logger.log(
-        `redis SMESSAGE channel=${channel.toString()} bytes=${message.length}`,
+        `redis adapter message channel=${channel} bytes=${Buffer.byteLength(message)}`,
       );
     });
 
-    this.adapterConstructor = createShardedAdapter(pubClient, subClient, {
-      // One channel per public room → only nodes that joined user:{id} get that emit
-      subscriptionMode: 'dynamic',
-    });
-    this.logger.log(
-      `Socket.IO sharded Redis adapter ready (${redisConfig.url}, mode=dynamic)`,
-    );
+    this.adapterConstructor = createAdapter(pubClient, subClient);
+    this.logger.log(`Socket.IO Redis adapter ready (${redisConfig.url})`);
   }
 
   createIOServer(port: number, options?: ServerOptions) {
