@@ -34,7 +34,7 @@ export class GpsProducerService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     this.drivers = this.seedDrivers(kafkaConfig.driverCount);
     this.logger.log(
-      `Starting GPS producer: ${this.drivers.length} drivers → topic "${kafkaConfig.gpsEventsTopic}" (Avro)`,
+      `Starting GPS producer: ${this.drivers.length} drivers → topic "${kafkaConfig.gpsEventsDriverTopic}" (Avro)`,
     );
 
     const producer = await this.kafka.createProducer();
@@ -59,7 +59,7 @@ export class GpsProducerService implements OnModuleInit {
         const event = this.toEvent(driver);
         const value = await this.schemas.encode(event);
         const result = await producer.send({
-          topic: kafkaConfig.gpsEventsTopic,
+          topic: kafkaConfig.gpsEventsDriverTopic,
           messages: [
             {
               // Partition by driver_id so events stay ordered per driver

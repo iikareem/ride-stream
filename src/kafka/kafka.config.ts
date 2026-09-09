@@ -1,7 +1,8 @@
 export const kafkaConfig = {
   clientId: process.env.KAFKA_CLIENT_ID ?? 'ridestream',
   brokers: (process.env.KAFKA_BROKERS ?? 'localhost:9092').split(','),
-  gpsEventsTopic: process.env.GPS_EVENTS_TOPIC ?? 'gps-events',
+  gpsEventsDriverTopic:
+    process.env.GPS_EVENTS_DRIVER_TOPIC ?? 'gps-events-driver',
   gpsEventsRiderTopic:
     process.env.GPS_EVENTS_RIDER_TOPIC ?? 'gps-events-rider',
   etaUpdatesTopic: process.env.ETA_UPDATES_TOPIC ?? 'eta-updates',
@@ -9,7 +10,6 @@ export const kafkaConfig = {
   /** Stable id for ETA EOS transactions (one live ETA process per id). */
   etaTransactionalId:
     process.env.ETA_TRANSACTIONAL_ID ?? 'ridestream-eta-producer',
-  liveMapGroupId: process.env.LIVE_MAP_GROUP_ID ?? 'ridestream-live-map',
   riderGeoGroupId: process.env.RIDER_GEO_GROUP_ID ?? 'ridestream-rider-geo',
   schemaRegistryUrl:
     process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',

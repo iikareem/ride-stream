@@ -41,12 +41,12 @@ export class EtaCalculatorService implements OnModuleInit {
     attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
-      topic: kafkaConfig.gpsEventsTopic,
+      topic: kafkaConfig.gpsEventsDriverTopic,
       fromBeginning: kafkaConfig.consumeFromBeginning,
     });
 
     this.logger.log(
-      `ETA calculator EOS listening on "${kafkaConfig.gpsEventsTopic}" → "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, transactionalId=${transactionalId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
+      `ETA calculator EOS listening on "${kafkaConfig.gpsEventsDriverTopic}" → "${kafkaConfig.etaUpdatesTopic}" (group=${groupId}, transactionalId=${transactionalId}, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({

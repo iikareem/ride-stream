@@ -59,7 +59,7 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
       KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
 
-  # Creates gps-events, gps-events-rider, eta-updates, and driver-anomalies once the broker is healthy.
+  # Creates gps-events-driver, gps-events-rider, eta-updates, and driver-anomalies once the broker is healthy.
   init-topics:
     image: confluentinc/cp-kafka:7.9.0
     container_name: ridestream-init-topics
@@ -71,7 +71,7 @@ services:
       - |
         set -euo pipefail
         kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic gps-events \
+          --topic gps-events-driver \
           --partitions 6 \
           --replication-factor 1 \
           --config retention.ms=86400000

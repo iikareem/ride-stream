@@ -23,12 +23,12 @@ export class GpsPrinterService implements OnModuleInit {
     attachRebalanceLogging(consumer, groupId, this.logger);
 
     await consumer.subscribe({
-      topic: kafkaConfig.gpsEventsTopic,
+      topic: kafkaConfig.gpsEventsDriverTopic,
       fromBeginning: kafkaConfig.consumeFromBeginning,
     });
 
     this.logger.log(
-      `Listening on topic "${kafkaConfig.gpsEventsTopic}" (group=${groupId}, Avro, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
+      `Listening on topic "${kafkaConfig.gpsEventsDriverTopic}" (group=${groupId}, Avro, fromBeginning=${kafkaConfig.consumeFromBeginning}, delayMs=${kafkaConfig.processingDelayMs})`,
     );
 
     await consumer.run({

@@ -1,6 +1,6 @@
 /**
  * GPSEvent Avro schemas.
- * Subject (TopicNameStrategy): gps-events-value
+ * Subject (TopicNameStrategy): gps-events-driver-value
  *
  * v1 — Phase 2 baseline fields
  * v2 — adds optional `heading` (degrees 0–360) with default null → BACKWARD compatible
@@ -40,4 +40,4 @@ export const GPS_EVENT_SCHEMA_V2 = {
   ],
 } as const;
 
-export const GPS_EVENT_VALUE_SUBJECT = 'gps-events-value';
+export const GPS_EVENT_VALUE_SUBJECT = 'gps-events-driver-value';

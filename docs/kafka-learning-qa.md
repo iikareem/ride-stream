@@ -24,7 +24,7 @@ Day to day you only care about: `localhost:9092`.
 | `broker` | The actual Kafka server |
 | `schema-registry` | Phase 2 (Avro) — unused in Phase 1 |
 | `kafka-ui` | Browser UI at `:8080` |
-| `init-topics` | One-shot script that creates `gps-events` |
+| `init-topics` | One-shot script that creates `gps-events-driver` |
 
 ---
 
@@ -33,7 +33,7 @@ Day to day you only care about: `localhost:9092`.
 Kafka won’t create your topic automatically here. `init-topics`:
 
 1. Waits until the broker is healthy  
-2. Creates `gps-events` with **6 partitions** (if missing)  
+2. Creates `gps-events-driver` with **6 partitions** (if missing)  
 3. Lists topics and **exits**
 
 It is **not** another Kafka server — just a setup script in a container.
@@ -178,10 +178,9 @@ Right now each command can run alone.
 
 | Service | Topic(s) | groupId |
 | --- | --- | --- |
-| GPS printer | `gps-events` | `ridestream-gps-printer` |
-| ETA | `gps-events` → `eta-updates` | `ridestream-eta` |
-| Live map | `eta-updates` | `ridestream-live-map` |
-| Anomaly | `gps-events` → `driver-anomalies` | `ridestream-anomaly` |
+| GPS printer | `gps-events-driver` | `ridestream-gps-printer` |
+| ETA | `gps-events-driver` → `eta-updates` | `ridestream-eta` |
+| Anomaly | `gps-events-driver` → `driver-anomalies` | `ridestream-anomaly` |
 
 Same topic + **different** groups = each service gets a full independent stream (own offsets).  
 Same topic + **same** group = replicas sharing partitions for scale.
@@ -192,7 +191,7 @@ Same topic + **same** group = replicas sharing partitions for scale.
 
 Yes on commands and “knows its topic(s).”
 
-Isolation is by **`groupId`**, not always by different topics. Printer and ETA both read `gps-events` with different groups; live-map reads the derived `eta-updates` stream.
+Isolation is by **`groupId`**, not always by different topics. Printer and ETA both read `gps-events-driver` with different groups; other workers may read derived topics like `eta-updates`.
 
 ---
 
@@ -308,7 +307,7 @@ npm run start:consumer
 
 Look for:
 - `rebalancing…`
-- `joined — member=… assignment: gps-events=[0, 2, 4]` (example)
+- `joined — member=… assignment: gps-events-driver=[0, 2, 4]` (example)
 
 Stop one (Ctrl+C) → the other rebalances and takes more partitions.
 
@@ -360,7 +359,7 @@ Use these as you hit Phases 2–6. Fill answers as you learn.
 
 Binary Avro payloads are smaller than JSON. The Registry stores schemas by id; each message carries the id in a Confluent wire header. Producers and consumers agree on shape without embedding the full schema every time. Compatibility modes (BACKWARD here) block unsafe changes.
 
-In RideStream: subject `gps-events-value`, schemas in `src/kafka/schemas/gps-event.avsc.ts`, client `@kafkajs/confluent-schema-registry`.
+In RideStream: subject `gps-events-driver-value`, schemas in `src/kafka/schemas/gps-event.avsc.ts`, client `@kafkajs/confluent-schema-registry`.
 
 ---
 
@@ -418,28 +417,28 @@ Compose sets `SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD`.
 
 ### Q38. How did RideStream evolve GPSEvent?
 
-1. Register **v1** (baseline fields) under `gps-events-value`  
+1. Register **v1** (baseline fields) under `gps-events-driver-value`  
 2. Register **v2** (adds optional `heading`) — Registry accepts it under BACKWARD  
 3. Producer encodes with **v2** id; consumer `decode` uses the id in each message  
 
 Verify:
 
 ```bash
-curl -s http://localhost:8081/subjects/gps-events-value/versions
-curl -s http://localhost:8081/subjects/gps-events-value/versions/latest | jq .
+curl -s http://localhost:8081/subjects/gps-events-driver-value/versions
+curl -s http://localhost:8081/subjects/gps-events-driver-value/versions/latest | jq .
 ```
 
 ---
 
 ### Q39. Why wipe Kafka when switching from JSON to Avro?
 
-Avro binary is not JSON. Old Phase 1 messages on `gps-events` will fail decode. No volumes → `docker compose down && docker compose up -d` recreates an empty topic.
+Avro binary is not JSON. Old Phase 1 messages on `gps-events-driver` will fail decode. No volumes → `docker compose down && docker compose up -d` recreates an empty topic.
 
 ---
 
 ### Q40. Who registers the schema — producer or Registry UI?
 
-Either works. RideStream registers on app startup via `SchemaRegistryService.ensureSchemasRegistered()`. You can also paste schemas in Kafka UI. The subject name should stay `gps-events-value` (TopicNameStrategy for values).
+Either works. RideStream registers on app startup via `SchemaRegistryService.ensureSchemasRegistered()`. You can also paste schemas in Kafka UI. The subject name should stay `gps-events-driver-value` (TopicNameStrategy for values).
 
 ---
 
@@ -528,13 +527,13 @@ Rule of thumb:
 
 You finished Phase 2 with a working mental model, not only working code.
 
-You can explain that Schema Registry is a shared catalog so Kafka producers and consumers agree on Avro shape by schema id, instead of shipping JSON forever. You know RideStream registers subject `gps-events-value`, stores schemas via the Registry (backed by Kafka’s `_schemas` topic in Confluent), and that your Docker setup is ephemeral without volumes.
+You can explain that Schema Registry is a shared catalog so Kafka producers and consumers agree on Avro shape by schema id, instead of shipping JSON forever. You know RideStream registers subject `gps-events-driver-value`, stores schemas via the Registry (backed by Kafka’s `_schemas` topic in Confluent), and that your Docker setup is ephemeral without volumes.
 
 You understand schema evolution: v2 adds optional `heading` with default `null` under BACKWARD compatibility so a new reader can still decode old data. You also know registering v1 then v2 is a demo of history — the producer only encodes with v2 — and you can name FORWARD, FULL, and TRANSITIVE as related modes.
 
 You drew a clear boundary for interviews and design: Confluent Schema Registry is for Kafka event contracts (Avro/Protobuf/JSON Schema). Service-to-service gRPC shares schemas through `.proto` repos or Buf, not through this Registry. That distinction is the main conceptual win of Phase 2.
 
-Next learning target when you are ready: Phase 3 — separate consumer groups (ETA, live map) on the same Avro `gps-events` stream.
+Next learning target when you are ready: Phase 3 — separate consumer groups (ETA) on the same Avro `gps-events-driver` stream.
 
 ---
 
@@ -542,7 +541,7 @@ Next learning target when you are ready: Phase 3 — separate consumer groups (E
 
 ### Q48. Why a separate consumer group for ETA instead of extending the printer?
 
-Different **jobs** need different **offsets**. The printer and ETA calculator both read `gps-events` but must not share a group id. Same group would split partitions between them and each would miss half the drivers. Separate groups (`ridestream-gps-printer` vs `ridestream-eta`) each get the full stream.
+Different **jobs** need different **offsets**. The printer and ETA calculator both read `gps-events-driver` but must not share a group id. Same group would split partitions between them and each would miss half the drivers. Separate groups (`ridestream-gps-printer` vs `ridestream-eta`) each get the full stream.
 
 ---
 
@@ -560,31 +559,9 @@ In production, destination would come from a trip message/body or a Redis/DB loo
 
 ---
 
-## I. Phase 3b — Live Map Updater
+## I. Phase 3c — Latency and rebalance
 
-### Q51. Why consume `eta-updates` instead of `gps-events`?
-
-`eta-updates` already carries **position + ETA** (lat/lon, speed, destination, `eta_seconds`). The live map is a read model for “where is the driver and when do they arrive,” so one topic covers both. Live-map does not need to recompute ETA or duplicate GPS consumption.
-
-Kafka still keeps the raw GPS history on `gps-events`; live-map only needs the latest enriched state.
-
----
-
-### Q52. Why keep it in memory instead of publishing another topic?
-
-Live map is a **read model** (current state), not a new event stream. The updater collapses `eta-updates` into “latest per `driver_id`.” Later Phase 7 moves this `Map` into Redis for multi-process / WebSocket sharing. No HTTP endpoint in this phase — logs prove the upsert works.
-
----
-
-### Q53. Does live-map need ETA running?
-
-Yes for fresh data. Live-map only sees what ETA publishes to `eta-updates`. Start producer → ETA → live-map.
-
----
-
-## J. Phase 3c — Latency and rebalance
-
-### Q54. What does `latency_ms` in the logs mean?
+### Q51. What does `latency_ms` in the logs mean?
 
 `latency_ms = Date.now() - event.timestamp`. The producer stamps each GPS/ETA payload with wall-clock time; consumers subtract that when they finish handling the message. It answers: “how old is this event when I processed it?”
 
@@ -592,19 +569,19 @@ It is **not** the same as Kafka consumer lag (how many offsets behind the log en
 
 ---
 
-### Q55. Why can `latency_ms` be huge at startup?
+### Q52. Why can `latency_ms` be huge at startup?
 
 With `CONSUME_FROM_BEGINNING=true`, the group replays old messages. Their timestamps are minutes/hours ago → huge `latency_ms` until the consumer catches up. For a live drill, set `CONSUME_FROM_BEGINNING=false` so you only read new messages.
 
 ---
 
-### Q56. What does `PROCESSING_DELAY_MS` teach?
+### Q53. What does `PROCESSING_DELAY_MS` teach?
 
 It fakes slow business logic (DB call, heavy CPU). If each message takes 2s and the producer is faster, **offset lag grows**. Clear the delay and lag drains. That is the same pattern you alert on in production.
 
 ---
 
-### Q57. What happens in a rebalance?
+### Q54. What happens in a rebalance?
 
 Same `groupId`, more/fewer members → coordinator revokes and reassigns partitions. Logs show `REBALANCING` then `GROUP_JOIN` with the new assignment. Processing pauses briefly; with auto-commit / at-least-once you may process the same offset twice around the boundary.
 
@@ -612,39 +589,39 @@ Same `groupId`, more/fewer members → coordinator revokes and reassigns partiti
 
 ---
 
-## K. Phase 4 — ksqlDB anomalies + Nest ETA EOS
+## J. Phase 4 — ksqlDB anomalies + Nest ETA EOS
 
-### Q58. How does teleport detection work without Nest?
+### Q55. How does teleport detection work without Nest?
 
 A **table** `latest_gps` keeps the last lat/lon per `DRIVER_ID`. A **stream** query joins each new GPS event to that table and uses `GEO_DISTANCE(...)` — if the jump is large and the event is newer, emit `TELEPORT` to `driver-anomalies-teleport`.
 
-### Q59. What stays hard in SQL?
+### Q56. What stays hard in SQL?
 
 Route deviation, map-matching, and rich multi-signal scoring need trip state Nest (or Flink) can hold more easily. ksqlDB is best for filters, windows, and simple last-point joins.
 
-### Q60. What does `exactly_once_v2` cover in RideStream?
+### Q57. What does `exactly_once_v2` cover in RideStream?
 
 ksqlDB’s persistent queries (speed spikes, windows, teleport, freeze) use Kafka transactions so a failure does not double-apply that query’s output the at-least-once way. Nest apps reading those topics are still usually at-least-once unless you design for idempotency. Existing queries must be recreated after enabling EOS on the server.
 
-### Q61. Idempotent producer vs `transactional.id`?
+### Q58. Idempotent producer vs `transactional.id`?
 
 **Idempotent** (`idempotent: true`): broker gives the producer a PID and **sequence numbers** per partition so network retries don’t append the same record twice. No `transactional.id` required.
 
-**Transactional** (`transactional.id`): stronger — multi-write atomicity + **zombie fencing**. GPS producer uses idempotent only; **ETA** uses a transactional producer: send `eta-updates` + `sendOffsets` for the GPS consumer group, then `commit` (or `abort`). Live-map reads `eta-updates` with `readUncommitted: false` (read committed) so it only sees committed ETA messages.
+**Transactional** (`transactional.id`): stronger — multi-write atomicity + **zombie fencing**. GPS producer uses idempotent only; **ETA** uses a transactional producer: send `eta-updates` + `sendOffsets` for the GPS consumer group, then `commit` (or `abort`). Downstream readers of `eta-updates` can use `readUncommitted: false` (read committed) so they only see committed ETA messages.
 
-### Q62. If `idempotent` is true, sequences are used — otherwise not?
+### Q59. If `idempotent` is true, sequences are used — otherwise not?
 
 Yes. With `idempotent: true`, the broker tracks a producer id (PID) and a **sequence number per partition**; retried produces with the same seq are dropped. With `idempotent: false`, that protocol is off and retries can append duplicates.
 
-### Q63. What does `maxInFlightRequests` mean?
+### Q60. What does `maxInFlightRequests` mean?
 
 How many produce requests may be outstanding (sent, waiting for ack) at once. Higher → more pipelining/throughput; lower → simpler under failure. For idempotent producers Kafka requires **`maxInFlightRequests ≤ 5`**. RideStream GPS uses `5`; ETA transactional producer uses `1` for simpler txn ordering.
 
-### Q64. What is `ETA_TRANSACTIONAL_ID` and why cache one producer?
+### Q61. What is `ETA_TRANSACTIONAL_ID` and why cache one producer?
 
 It is Kafka’s **`transactional.id`** for the ETA writer (default `ridestream-eta-producer`). Kafka requires it for `producer.transaction()`. The same id is reused across restarts for **zombie fencing** (old instance’s commits are rejected). We keep one producer instance in a `Map` keyed by that id — do not create a new transactional producer per message. Only one live ETA process should use that id.
 
-### Q65. Why is `autoCommit: false` on ETA? Can auto-commit fail after a successful send?
+### Q62. Why is `autoCommit: false` on ETA? Can auto-commit fail after a successful send?
 
 Yes. With auto-commit you can:
 
@@ -655,12 +632,12 @@ Or commit the offset then fail before produce → **lost ETA**.
 
 So produce and “I processed this GPS” are not atomic. ETA turns auto-commit off and commits offsets only inside the transaction via `sendOffsets` + `commit`.
 
-### Q66. What is tightly coupled inside one ETA transaction?
+### Q63. What is tightly coupled inside one ETA transaction?
 
 ```text
 begin txn
   → send eta-updates
-  → sendOffsets (gps-events group, next offset)
+  → sendOffsets (gps-events-driver group, next offset)
   → commit   // both succeed together, or abort both
 ```
 
@@ -668,13 +645,13 @@ Logs show `eta txn commit … (acked gps … next_off=…)`.
 
 ---
 
-## L. Phase 5 — Observability
+## K. Phase 5 — Observability
 
-### Q67. Do we add Nest metrics code for Phase 5?
+### Q64. Do we add Nest metrics code for Phase 5?
 
 No. **kafka-exporter** talks to the broker and exposes Prometheus metrics (including `kafka_consumergroup_lag`). Prometheus scrapes on an interval; Grafana queries Prometheus. Broker JMX (`9101`) remains available for JVM tooling.
 
-### Q68. How do you demo lag alerts?
+### Q65. How do you demo lag alerts?
 
 Run ETA with `PROCESSING_DELAY_MS=2000`, keep the producer fast, open Grafana (`localhost:3000`) and Prometheus Alerts (`localhost:9090/alerts`). Lag should rise; rules fire after the configured `for` duration.
 
@@ -695,8 +672,7 @@ docker compose up -d --force-recreate init-topics
 
 # Apps
 npm run start:producer
-npm run start:eta            # gps-events → eta-updates (Nest EOS txn)
-npm run start:live-map       # eta-updates → in-memory Map (read committed)
+npm run start:eta            # gps-events-driver → eta-updates (Nest EOS txn)
 npm run start:consumer       # optional GPS printer
 
 # Latency / lag drills
@@ -714,7 +690,7 @@ docker exec ridestream-broker kafka-consumer-groups \
 
 # Schema Registry
 curl -s http://localhost:8081/subjects
-curl -s http://localhost:8081/subjects/gps-events-value/versions
+curl -s http://localhost:8081/subjects/gps-events-driver-value/versions
 curl -s http://localhost:8081/subjects/eta-updates-value/versions
 
 # UI
@@ -723,4 +699,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 5 observability (Q67–Q68).*
+*Last updated after removing live-map (Q51–Q65).*

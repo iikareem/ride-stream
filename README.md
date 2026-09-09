@@ -1,6 +1,6 @@
 # RideStream
 
-RideStream is a real-time GPS streaming pipeline that models the backend of a ride-sharing platform. Simulated drivers publish location events into Apache Kafka; NestJS workers consume them through independent consumer groups to derive ETAs and maintain live positions. **Stream processing for anomalies uses ksqlDB** (SQL on Kafka), not Nest business logic.
+RideStream is a real-time GPS streaming pipeline that models the backend of a ride-sharing platform. Simulated drivers publish location events into Apache Kafka; NestJS workers consume them through independent consumer groups to derive ETAs. **Stream processing for anomalies uses ksqlDB** (SQL on Kafka), not Nest business logic.
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
@@ -35,7 +35,6 @@ Drivers (Nest producers)
   Kafka broker (KRaft, single node for now)
         │
         ├──▶ Nest ETA Calculator     → eta-updates
-        ├──▶ Nest Live Map Updater   → in-memory latest (+ ETA)
         └──▶ ksqlDB                  → driver-anomalies
                     │
                     ▼
@@ -48,7 +47,7 @@ Drivers (Nest producers)
 
 | Approach | Role in RideStream |
 | --- | --- |
-| **Nest + KafkaJS** | Produce GPS, ETA, live-map read model, optional print/consume of anomalies |
+| **Nest + KafkaJS** | Produce GPS, ETA, optional print/consume of anomalies |
 | **ksqlDB** | Continuous SQL on topics: filters, tumbling/hopping windows, aggregates → `driver-anomalies` |
 | Kafka Streams / Flink | Not used here; noted as heavier JVM alternatives for production |
 
@@ -57,7 +56,7 @@ Nest does **not** embed ksqlDB. ksqlDB runs as its own Docker service, reads/wri
 ### Phase 3 (done) + Phase 4 (next)
 
 ```
-GPS producer ──Avro──▶ gps-events
+GPS producer ──Avro──▶ gps-events-driver
                           │
           ┌───────────────┼───────────────┬────────────────┐
           ▼               ▼               ▼                
@@ -66,20 +65,15 @@ GPS producer ──Avro──▶ gps-events
                           │               │
                           ▼               ▼
                      eta-updates    driver-anomalies
-                          │
-                          ▼
-                  ridestream-live-map
-                  (in-memory Map: position + ETA)
 ```
 
 | Component | Role |
 | --- | --- |
-| Producer | Simulates N drivers; Avro GPS to `gps-events` |
+| Producer | Simulates N drivers; Avro GPS to `gps-events-driver` |
 | `ridestream-gps-printer` | Decodes and logs GPS (independent group) |
 | `ridestream-eta` | Decodes GPS, **transactional** publish of Avro ETA to `eta-updates` (EOS: produce + offset commit) |
-| `ridestream-live-map` | Consumes `eta-updates`, upserts latest position + ETA per `driver_id` in memory (no HTTP yet) |
-| **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events` → `driver-anomalies` (optional EOS) |
-| Topics | `gps-events`, `gps-events-rider`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
+| **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events-driver` → `driver-anomalies` (optional EOS) |
+| Topics | `gps-events-driver`, `gps-events-rider`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
 
 ### Phase 4 Step 1 — ksqlDB infra
 
@@ -108,7 +102,7 @@ SQL files live under [`ksql/`](ksql/) (mounted into the CLI container at `/ksql`
 
 ### Phase 4 Step 2 — `CREATE STREAM gps_events`
 
-Registers the existing Avro topic so ksqlDB can query it. Nest must have produced at least once (so subject `gps-events-value` exists in Schema Registry).
+Registers the existing Avro topic so ksqlDB can query it. Nest must have produced at least once (so subject `gps-events-driver-value` exists in Schema Registry).
 
 ```bash
 # 1) Infra + producer (registers Avro schema)
@@ -308,7 +302,6 @@ ride-stream/
 │   ├── rider-geo/              # Rider GPS → Redis GEOADD
 │   ├── consumer/               # gps-printer consumer worker
 │   ├── eta/                    # ETA calculator worker
-│   ├── live-map/               # Live map updater (in-memory latest positions)
 │   ├── redis/                  # Redis client (GEO helpers)
 │   ├── app.module.ts           # Default HTTP bootstrap (unused by workers)
 │   └── main.ts
@@ -316,7 +309,7 @@ ride-stream/
 └── package.json
 ```
 
-Nest workers are isolated processes (produce / ETA / live-map). **ksqlDB** and **Prometheus/Grafana** are separate Compose services — no Nest metrics code required for Phase 5.
+Nest workers are isolated processes (produce / ETA / rider-geo / gateway). **ksqlDB** and **Prometheus/Grafana** are separate Compose services — no Nest metrics code required for Phase 5.
 
 ---
 
@@ -343,7 +336,7 @@ docker compose logs init-topics
 # Terminal A — simulate drivers
 npm run start:producer
 
-# Terminal B — ETA calculator (gps-events → eta-updates)
+# Terminal B — ETA calculator (gps-events-driver → eta-updates)
 npm run start:eta
 
 # Optional — print raw GPS
@@ -375,12 +368,11 @@ Copy `.env.example` to `.env`:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated bootstrap servers |
-| `GPS_EVENTS_TOPIC` | `gps-events` | Driver GPS topic name |
+| `GPS_EVENTS_DRIVER_TOPIC` | `gps-events-driver` | Driver GPS topic name |
 | `GPS_EVENTS_RIDER_TOPIC` | `gps-events-rider` | Rider GPS topic name |
 | `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
 | `ETA_GROUP_ID` | `ridestream-eta` | ETA consumer group id |
 | `ETA_TRANSACTIONAL_ID` | `ridestream-eta-producer` | ETA EOS transactional.id (one live ETA instance) |
-| `LIVE_MAP_GROUP_ID` | `ridestream-live-map` | Live map consumer group id |
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
 | `RIDER_COUNT` | `10` | Simulated riders in the rider producer |
@@ -405,7 +397,7 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 
 | Script | Purpose |
 | --- | --- |
-| `npm run start:producer` | Driver GPS event producer (`gps-events`) |
+| `npm run start:producer` | Driver GPS event producer (`gps-events-driver`) |
 | `npm run start:producer:dev` | Driver producer with watch mode |
 | `npm run start:rider-producer` | Rider GPS event producer (`gps-events-rider`) |
 | `npm run start:rider-producer:dev` | Rider producer with watch mode |
@@ -416,10 +408,8 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run emit:test` | Redis `PUBLISH user:{id}` → gateway → Socket.IO `drivers` (no Kafka) |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
-| `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
+| `npm run start:eta` | ETA calculator (`gps-events-driver` → `eta-updates`) |
 | `npm run start:eta:dev` | ETA calculator with watch mode |
-| `npm run start:live-map` | Live map updater (`eta-updates` → in-memory Map) |
-| `npm run start:live-map:dev` | Live map updater with watch mode |
 | `npm run build` | Compile TypeScript |
 | `npm start` | Default Nest HTTP app (not used by pipeline workers) |
 
@@ -450,7 +440,7 @@ Each message sleeps 2s → consumer cannot keep up → Kafka UI lag rises. Set d
 
 ### Drill 3 — Rebalance (same groupId)
 
-Works for printer, ETA, or live-map — use the **same** script twice:
+Works for printer or ETA — use the **same** script twice:
 
 ```bash
 # Terminal 1
@@ -464,7 +454,7 @@ You should see:
 
 ```text
 [ridestream-eta] rebalancing — partitions being revoked/reassigned
-[ridestream-eta] joined — member=… assignment: gps-events=[0, 2, 4]
+[ridestream-eta] joined — member=… assignment: gps-events-driver=[0, 2, 4]
 ```
 
 Stop one process; the survivor rebalances and takes the rest. During rebalance, at-least-once delivery can mean a few **duplicate** processings (offsets not yet committed).
@@ -513,22 +503,22 @@ Schemas live in [`src/kafka/schemas/gps-event.avsc.ts`](src/kafka/schemas/gps-ev
 - **v1** — baseline fields  
 - **v2** — adds optional `heading` (`null` default) under Registry `BACKWARD` compatibility  
 
-On startup the app registers v1 then v2 for subject `gps-events-value`, then produces with v2.
+On startup the app registers v1 then v2 for subject `gps-events-driver-value`, then produces with v2.
 
 ### Verify schema evolution
 
 ```bash
 # List versions for the value subject
-curl -s http://localhost:8081/subjects/gps-events-value/versions
+curl -s http://localhost:8081/subjects/gps-events-driver-value/versions
 
 # Inspect latest schema
-curl -s http://localhost:8081/subjects/gps-events-value/versions/latest | jq .
+curl -s http://localhost:8081/subjects/gps-events-driver-value/versions/latest | jq .
 
 # Compatibility level for the subject (Compose defaults the cluster to BACKWARD)
-curl -s http://localhost:8081/config/gps-events-value | jq .
+curl -s http://localhost:8081/config/gps-events-driver-value | jq .
 ```
 
-Or open Kafka UI → Schema Registry → `gps-events-value`.
+Or open Kafka UI → Schema Registry → `gps-events-driver-value`.
 
 ---
 
@@ -537,7 +527,7 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 ### Phase 1 — Foundation (done)
 
 - [x] Single-broker Kafka via Docker Compose (KRaft)
-- [x] `gps-events` topic (6 partitions)
+- [x] `gps-events-driver` topic (6 partitions)
 - [x] GPS producer (JSON, keyed by `driver_id`)
 - [x] Plain consumer group that prints events
 - [x] Rebalance assignment logging
@@ -550,15 +540,14 @@ Or open Kafka UI → Schema Registry → `gps-events-value`.
 ### Phase 3 — Consumers
 
 - [x] ETA Calculator consumer group → `eta-updates` topic
-- [x] Live Map Updater consumer group (`eta-updates` → in-memory latest + ETA)
 - [x] Latency tuning and rebalance behavior (`latency_ms`, fetch/session knobs, drills)
 
 ### Phase 4 — Stream processing (**ksqlDB**)
 
-Nest keeps ETA + live-map. Anomalies move to **ksqlDB** continuous SQL on `gps-events`.
+Nest keeps ETA. Anomalies move to **ksqlDB** continuous SQL on `gps-events-driver`.
 
 - [x] Add ksqlDB server (+ CLI) to Docker Compose; wire Schema Registry; create `driver-anomalies` topic
-- [x] `ksql/` statements: `CREATE STREAM` over Avro `gps-events`
+- [x] `ksql/` statements: `CREATE STREAM` over Avro `gps-events-driver`
 - [x] Anomaly queries → `driver-anomalies` topic (speed spikes first; then freeze / teleport where SQL fits)
 - [x] Windowed aggregates (tumbling / hopping) for spike counts
 - [x] Freeze + teleport heuristics (`04_freeze_teleport.sql`)
@@ -635,8 +624,8 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 | Avro + BACKWARD | Optional fields with defaults (e.g. `heading`) let readers use new schemas on old data |
 | Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
 | Idempotent Nest GPS producer | KafkaJS `idempotent: true` → PID + sequence numbers; retries don’t duplicate |
-| Transactional Nest ETA | `transactional.id` + `send` + `sendOffsets` + `commit`; live-map uses `read_committed` |
-| **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; Nest stays TypeScript workers for ETA/live-map |
+| Transactional Nest ETA | `transactional.id` + `send` + `sendOffsets` + `commit` |
+| **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; Nest stays TypeScript workers for ETA |
 | Not Kafka Streams / Flink here | Heavier JVM apps; overkill for this learning repo — document as production alternatives |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
