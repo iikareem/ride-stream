@@ -281,6 +281,7 @@ Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state
 | Live clients (Phase 7) | WebSocket push |
 | Local infra | Docker Compose |
 | Ops UI | Kafka UI (`localhost:8080`) |
+| Redis Insight | `localhost:5540` (preconfigured; host is Compose service `redis`, not `127.0.0.1`) |
 | ksqlDB UI/REST | `localhost:8088` |
 | Prometheus | `localhost:9090` |
 | Grafana | `localhost:3000` (admin / admin) |
@@ -292,7 +293,7 @@ Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state
 
 ```
 ride-stream/
-├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, ksqlDB, monitoring
+├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, Redis, Redis Insight, ksqlDB, monitoring
 ├── monitoring/                 # Phase 5: Prometheus + Grafana + lag alerts
 │   ├── prometheus.yml
 │   ├── alerts.yml
@@ -304,9 +305,11 @@ ride-stream/
 │   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas, rebalance helpers
 │   ├── producer/               # GPS simulator worker
 │   ├── rider-producer/         # Rider GPS simulator → gps-events-rider
+│   ├── rider-geo/              # Rider GPS → Redis GEOADD
 │   ├── consumer/               # gps-printer consumer worker
 │   ├── eta/                    # ETA calculator worker
 │   ├── live-map/               # Live map updater (in-memory latest positions)
+│   ├── redis/                  # Redis client (GEO helpers)
 │   ├── app.module.ts           # Default HTTP bootstrap (unused by workers)
 │   └── main.ts
 ├── .env.example
@@ -354,6 +357,8 @@ npm run start:consumer
 | Kafka bootstrap | `localhost:9092` |
 | Schema Registry | http://localhost:8081 |
 | Kafka UI | http://localhost:8080 |
+| Redis | `localhost:6379` |
+| Redis Insight | http://localhost:5540 |
 
 Tear down (no volumes: data and offsets are wiped):
 
@@ -379,6 +384,9 @@ Copy `.env.example` to `.env`:
 | `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
 | `RIDER_COUNT` | `10` | Simulated riders in the rider producer |
+| `RIDER_GEO_GROUP_ID` | `ridestream-rider-geo` | Rider GEO consumer group id |
+| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
+| `RIDERS_GEO_KEY` | `riders:geo` | Redis GEO key for rider positions |
 | `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
 | `CONSUME_FROM_BEGINNING` | `true` | Replay earliest offsets (`false` = live tail only) |
 | `PROCESSING_DELAY_MS` | `0` | Artificial per-message sleep to grow lag |
@@ -400,6 +408,8 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:producer:dev` | Driver producer with watch mode |
 | `npm run start:rider-producer` | Rider GPS event producer (`gps-events-rider`) |
 | `npm run start:rider-producer:dev` | Rider producer with watch mode |
+| `npm run start:rider-geo` | Rider GEO consumer (`gps-events-rider` → Redis GEO) |
+| `npm run start:rider-geo:dev` | Rider GEO consumer with watch mode |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
@@ -595,8 +605,9 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 ```
 
 - [x] Rider GPS topic + producer (`gps-events-rider`, Avro `rider_id`)
-- [ ] Redis in Docker Compose (GEO for riders + Pub/Sub)
-- [ ] Consumers **GEOADD** riders and fan-out driver updates via Pub/Sub
+- [x] Redis in Docker Compose (GEO for riders)
+- [x] Consumer **GEOADD** riders from `gps-events-rider`
+- [ ] Fan-out driver updates via GEOSEARCH + Pub/Sub
 - [ ] Nest gateway subscribes to Redis and **pushes** over WebSocket
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [ ] Simple client UI that renders the live feed

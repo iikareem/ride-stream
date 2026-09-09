@@ -203,3 +203,35 @@ services:
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  # Phase 7 — Redis GEO + Pub/Sub for live nearby riders
+  redis:
+    image: redis:7.4-alpine
+    container_name: ridestream-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-insight:
+    image: redis/redisinsight:2.70
+    container_name: ridestream-redis-insight
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5540:5540"
+    environment:
+      # Insight runs in Docker — use the Compose service name, not 127.0.0.1
+      RI_REDIS_HOST: redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_ALIAS: ridestream-redis
+    volumes:
+      - redis-insight-data:/data
+
+volumes:
+  redis-insight-data:
