@@ -413,7 +413,7 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:rider-geo:dev` | Rider GEO consumer with watch mode |
 | `npm run start:gateway` | WebSocket gateway (Socket.IO on `GATEWAY_PORT`) |
 | `npm run start:gateway:dev` | WebSocket gateway with watch mode |
-| `npm run emit:test` | One-shot redis-emitter → `user:{id}` / event `drivers` (no Kafka) |
+| `npm run emit:test` | Redis `PUBLISH user:{id}` → gateway → Socket.IO `drivers` (no Kafka) |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
@@ -611,12 +611,10 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 - [x] Rider GPS topic + producer (`gps-events-rider`, Avro `rider_id`)
 - [x] Redis in Docker Compose (GEO for riders)
 - [x] Consumer **GEOADD** riders from `gps-events-rider`
-- [x] Nest WebSocket gateway — connect + join `user:{userId}` + Redis Socket.IO adapter
-- [ ] Fan-out driver updates via GEOSEARCH + redis-emitter (no gateway Pub/Sub)
+- [x] Nest WebSocket gateway — connect + join `user:{userId}` + Redis Pub/Sub `SUBSCRIBE` / `PUBLISH`
+- [ ] Fan-out driver updates via GEOSEARCH + Redis `PUBLISH user:{riderId}`
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [ ] Simple client UI that renders the live feed
-
-> Pub/Sub-on-join variant kept on branch `gateway-redis-pubsub` for reference.
 
 ### Phase 8 — Cluster (future)
 
@@ -638,7 +636,7 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 | Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
 | Idempotent Nest GPS producer | KafkaJS `idempotent: true` → PID + sequence numbers; retries don’t duplicate |
 | Transactional Nest ETA | `transactional.id` + `send` + `sendOffsets` + `commit`; live-map uses `read_committed` |
-| **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; easy CV-visible Confluent skill; Nest stays TypeScript workers for ETA/live-map |
+| **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; Nest stays TypeScript workers for ETA/live-map |
 | Not Kafka Streams / Flink here | Heavier JVM apps; overkill for this learning repo — document as production alternatives |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
@@ -653,6 +651,10 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 Companion study sheet (questions and answers from building the pipeline):
 
 [`docs/kafka-learning-qa.md`](docs/kafka-learning-qa.md)
+
+Plain-language walkthrough of the WebSocket gateway and Redis Pub/Sub:
+
+[`docs/redis-pubsub-gateway.md`](docs/redis-pubsub-gateway.md)
 
 ---
 

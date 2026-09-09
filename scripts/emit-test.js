@@ -1,13 +1,13 @@
 /**
- * One-shot redis-emitter test (no Kafka producer).
+ * Smoke test: Redis PUBLISH to user:{id}.
+ * Gateway must be running and the client must have joined that userId.
  *
  * Usage:
  *   npm run emit:test
  *   npm run emit:test -- rider-001 '{"lat":30.04,"lon":31.23}'
  *
- * Prerequisites: Redis up, gateway running, Postman joined that userId and listening for "drivers".
+ * Or in Redis Insight: PUBLISH user:rider-001 '{"hello":true}'
  */
-const { Emitter } = require('@socket.io/redis-emitter');
 const Redis = require('ioredis');
 
 async function main() {
@@ -15,26 +15,22 @@ async function main() {
   const raw = process.argv[3] || '{"hello":true,"from":"emit:test"}';
   let payload;
   try {
-    payload = JSON.parse(raw);
+    JSON.parse(raw);
+    payload = raw;
   } catch {
-    payload = { text: raw };
+    payload = JSON.stringify({ text: raw });
   }
 
-  const room = `user:${userId}`;
+  const channel = `user:${userId}`;
   const url = process.env.REDIS_URL || 'redis://localhost:6379';
-  const redis = new Redis(url);
+  const client = new Redis(url);
 
-  await new Promise((resolve, reject) => {
-    if (redis.status === 'ready') return resolve();
-    redis.once('ready', resolve);
-    redis.once('error', reject);
-  });
+  const receivers = await client.publish(channel, payload);
+  console.log(
+    `PUBLISH channel=${channel} receivers=${receivers} payload=${payload}`,
+  );
 
-  const io = new Emitter(redis);
-  io.to(room).emit('drivers', payload);
-  console.log(`emitted event=drivers room=${room} payload=${JSON.stringify(payload)}`);
-
-  await redis.quit();
+  await client.quit();
 }
 
 main().catch((err) => {

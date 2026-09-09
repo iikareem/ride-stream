@@ -33,8 +33,6 @@
     "@nestjs/platform-express": "^11.0.12",
     "@nestjs/platform-socket.io": "^11.2.3",
     "@nestjs/websockets": "^11.2.3",
-    "@socket.io/redis-adapter": "^8.3.0",
-    "@socket.io/redis-emitter": "^5.1.0",
     "ioredis": "^6.0.0",
     "kafkajs": "^2.2.4",
     "reflect-metadata": "^0.2.2",

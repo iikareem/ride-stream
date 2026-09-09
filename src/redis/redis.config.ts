@@ -3,3 +3,8 @@ export const redisConfig = {
   /** Redis GEO key holding rider positions (member = rider_id). */
   ridersGeoKey: process.env.RIDERS_GEO_KEY ?? 'riders:geo',
 } as const;
+
+/** Business Pub/Sub channel for a user (Redis Insight can PUBLISH here). */
+export function userChannel(userId: string): string {
+  return `user:${userId}`;
+}
