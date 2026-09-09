@@ -296,20 +296,24 @@ ride-stream/
 │   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
 ├── ksql/                       # Phase 4: ksqlDB statements (streams, anomaly queries)
 ├── src/
-│   ├── kafka/                  # Kafka client, Schema Registry, Avro schemas, rebalance helpers
-│   ├── producer/               # GPS simulator worker
-│   ├── rider-producer/         # Rider GPS simulator → gps-events-rider
-│   ├── rider-geo/              # Rider GPS → Redis GEOADD
-│   ├── consumer/               # gps-printer consumer worker
-│   ├── eta/                    # ETA calculator worker
-│   ├── redis/                  # Redis client (GEO helpers)
-│   ├── app.module.ts           # Default HTTP bootstrap (unused by workers)
-│   └── main.ts
+│   ├── drivers/
+│   │   ├── producer/           # Driver GPS simulator → gps-events-driver
+│   │   └── consumer/
+│   │       ├── printer/        # GPS printer
+│   │       └── eta/            # ETA calculator → eta-updates
+│   ├── riders/
+│   │   ├── producer/           # Rider GPS simulator → gps-events-rider
+│   │   └── consumer/
+│   │       └── geo/            # Rider GPS → Redis GEOADD
+│   ├── gateway/                # Socket.IO + Redis Pub/Sub
+│   └── shared/
+│       ├── kafka/              # Kafka client, Schema Registry, Avro schemas
+│       └── redis/              # Redis client (GEO + Pub/Sub helpers)
 ├── .env.example
 └── package.json
 ```
 
-Nest workers are isolated processes (produce / ETA / rider-geo / gateway). **ksqlDB** and **Prometheus/Grafana** are separate Compose services — no Nest metrics code required for Phase 5.
+Nest workers are isolated processes under `drivers/`, `riders/`, and `gateway/`. **ksqlDB** and **Prometheus/Grafana** are separate Compose services — no Nest metrics code required for Phase 5.
 
 ---
 
@@ -498,7 +502,7 @@ Logical record (wire format is Confluent Avro binary with schema id):
 
 Message key: `driver_id` (ordering per driver).
 
-Schemas live in [`src/kafka/schemas/gps-event.avsc.ts`](src/kafka/schemas/gps-event.avsc.ts):
+Schemas live in [`src/shared/kafka/schemas/gps-event.avsc.ts`](src/shared/kafka/schemas/gps-event.avsc.ts):
 
 - **v1** — baseline fields  
 - **v2** — adds optional `heading` (`null` default) under Registry `BACKWARD` compatibility  

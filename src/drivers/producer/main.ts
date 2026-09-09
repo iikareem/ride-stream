@@ -1,8 +1,8 @@
 import { NestFactory } from '@nestjs/core';
-import { ConsumerModule } from './consumer.module';
+import { DriverProducerModule } from './driver-producer.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.createApplicationContext(ConsumerModule, {
+  const app = await NestFactory.createApplicationContext(DriverProducerModule, {
     logger: ['log', 'error', 'warn'],
   });
   app.enableShutdownHooks();

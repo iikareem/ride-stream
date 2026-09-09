@@ -1,12 +1,12 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { EachMessagePayload } from 'kafkajs';
-import { KafkaService } from '../kafka/kafka.service';
-import { SchemaRegistryService } from '../kafka/schema-registry.service';
-import { kafkaConfig } from '../kafka/kafka.config';
+import { KafkaService } from '../../../shared/kafka/kafka.service';
+import { SchemaRegistryService } from '../../../shared/kafka/schema-registry.service';
+import { kafkaConfig } from '../../../shared/kafka/kafka.config';
 import {
   attachRebalanceLogging,
   latencyMs,
-} from '../kafka/consumer-observability';
+} from '../../../shared/kafka/consumer-observability';
 
 @Injectable()
 export class GpsPrinterService implements OnModuleInit {

@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { KafkaModule } from '../kafka/kafka.module';
-import { RedisModule } from '../redis/redis.module';
+import { KafkaModule } from '../../../shared/kafka/kafka.module';
+import { RedisModule } from '../../../shared/redis/redis.module';
 import { RiderGeoService } from './rider-geo.service';
 
 @Module({

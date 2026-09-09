@@ -1,8 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { KafkaService } from '../kafka/kafka.service';
-import { SchemaRegistryService } from '../kafka/schema-registry.service';
-import { kafkaConfig } from '../kafka/kafka.config';
-import { DriverStatus, GpsEvent } from '../kafka/gps-event';
+import { KafkaService } from '../../shared/kafka/kafka.service';
+import { SchemaRegistryService } from '../../shared/kafka/schema-registry.service';
+import { kafkaConfig } from '../../shared/kafka/kafka.config';
+import { DriverStatus, GpsEvent } from '../../shared/kafka/gps-event';
 
 const STATUSES: DriverStatus[] = ['available', 'en_route', 'on_trip'];
 

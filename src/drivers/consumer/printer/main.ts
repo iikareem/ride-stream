@@ -1,8 +1,8 @@
 import { NestFactory } from '@nestjs/core';
-import { ProducerModule } from './producer.module';
+import { DriverPrinterModule } from './driver-printer.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.createApplicationContext(ProducerModule, {
+  const app = await NestFactory.createApplicationContext(DriverPrinterModule, {
     logger: ['log', 'error', 'warn'],
   });
   app.enableShutdownHooks();

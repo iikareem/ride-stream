@@ -359,7 +359,7 @@ Use these as you hit Phases 2–6. Fill answers as you learn.
 
 Binary Avro payloads are smaller than JSON. The Registry stores schemas by id; each message carries the id in a Confluent wire header. Producers and consumers agree on shape without embedding the full schema every time. Compatibility modes (BACKWARD here) block unsafe changes.
 
-In RideStream: subject `gps-events-driver-value`, schemas in `src/kafka/schemas/gps-event.avsc.ts`, client `@kafkajs/confluent-schema-registry`.
+In RideStream: subject `gps-events-driver-value`, schemas in `src/shared/kafka/schemas/gps-event.avsc.ts`, client `@kafkajs/confluent-schema-registry`.
 
 ---
 

@@ -1,14 +1,14 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { EachMessagePayload } from 'kafkajs';
-import { KafkaService } from '../kafka/kafka.service';
-import { SchemaRegistryService } from '../kafka/schema-registry.service';
-import { kafkaConfig } from '../kafka/kafka.config';
-import { GpsEvent } from '../kafka/gps-event';
-import { EtaUpdate } from '../kafka/eta-update';
+import { KafkaService } from '../../../shared/kafka/kafka.service';
+import { SchemaRegistryService } from '../../../shared/kafka/schema-registry.service';
+import { kafkaConfig } from '../../../shared/kafka/kafka.config';
+import { GpsEvent } from '../../../shared/kafka/gps-event';
+import { EtaUpdate } from '../../../shared/kafka/eta-update';
 import {
   attachRebalanceLogging,
   latencyMs,
-} from '../kafka/consumer-observability';
+} from '../../../shared/kafka/consumer-observability';
 
 /** Cairo-ish box used to pick a stable fake destination per driver */
 const DEST_LAT_MIN = 29.95;

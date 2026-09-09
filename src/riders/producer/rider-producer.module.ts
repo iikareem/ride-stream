@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { KafkaModule } from '../kafka/kafka.module';
+import { KafkaModule } from '../../shared/kafka/kafka.module';
 import { RiderGpsProducerService } from './rider-gps-producer.service';
 
 @Module({

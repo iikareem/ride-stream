@@ -10,8 +10,8 @@ import {
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
-import { RedisService } from '../redis/redis.service';
-import { userChannel } from '../redis/redis.config';
+import { RedisService } from '../shared/redis/redis.service';
+import { userChannel } from '../shared/redis/redis.config';
 
 type JoinPayload = {
   userId?: string;
