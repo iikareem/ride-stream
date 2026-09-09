@@ -387,6 +387,7 @@ Copy `.env.example` to `.env`:
 | `RIDER_GEO_GROUP_ID` | `ridestream-rider-geo` | Rider GEO consumer group id |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
 | `RIDERS_GEO_KEY` | `riders:geo` | Redis GEO key for rider positions |
+| `GATEWAY_PORT` | `3001` | Socket.IO gateway HTTP port |
 | `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
 | `CONSUME_FROM_BEGINNING` | `true` | Replay earliest offsets (`false` = live tail only) |
 | `PROCESSING_DELAY_MS` | `0` | Artificial per-message sleep to grow lag |
@@ -410,6 +411,8 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:rider-producer:dev` | Rider producer with watch mode |
 | `npm run start:rider-geo` | Rider GEO consumer (`gps-events-rider` → Redis GEO) |
 | `npm run start:rider-geo:dev` | Rider GEO consumer with watch mode |
+| `npm run start:gateway` | WebSocket gateway (Socket.IO on `GATEWAY_PORT`) |
+| `npm run start:gateway:dev` | WebSocket gateway with watch mode |
 | `npm run start:consumer` | GPS printer consumer |
 | `npm run start:consumer:dev` | Consumer with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events` → `eta-updates`) |
@@ -607,8 +610,9 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 - [x] Rider GPS topic + producer (`gps-events-rider`, Avro `rider_id`)
 - [x] Redis in Docker Compose (GEO for riders)
 - [x] Consumer **GEOADD** riders from `gps-events-rider`
-- [ ] Fan-out driver updates via GEOSEARCH + Pub/Sub
-- [ ] Nest gateway subscribes to Redis and **pushes** over WebSocket
+- [x] Nest WebSocket gateway — connect + join `user:{userId}` (Step 1)
+- [x] Redis Socket.IO adapter on gateway (Step 2)
+- [ ] Fan-out driver updates via GEOSEARCH + redis-emitter
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [ ] Simple client UI that renders the live feed
 

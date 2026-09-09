@@ -14,6 +14,8 @@
     "start:rider-producer:dev": "nest start --watch --entryFile rider-producer/main",
     "start:rider-geo": "nest start --entryFile rider-geo/main",
     "start:rider-geo:dev": "nest start --watch --entryFile rider-geo/main",
+    "start:gateway": "nest start --entryFile gateway/main",
+    "start:gateway:dev": "nest start --watch --entryFile gateway/main",
     "start:consumer": "nest start --entryFile consumer/main",
     "start:consumer:dev": "nest start --watch --entryFile consumer/main",
     "start:eta": "nest start --entryFile eta/main",
@@ -28,10 +30,14 @@
     "@nestjs/common": "^11.0.12",
     "@nestjs/core": "^11.0.12",
     "@nestjs/platform-express": "^11.0.12",
+    "@nestjs/platform-socket.io": "^11.2.3",
+    "@nestjs/websockets": "^11.2.3",
+    "@socket.io/redis-adapter": "^8.3.0",
     "ioredis": "^6.0.0",
     "kafkajs": "^2.2.4",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.6",
