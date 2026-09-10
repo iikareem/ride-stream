@@ -774,6 +774,19 @@ Rider positions must already be in Redis via `start:rider-geo`. Empty GEO → ze
 
 The printer only logged. Nearby is the Phase 7 side effect that proves the live path: Kafka → Redis GEO match → Pub/Sub → WebSocket. Logging stays on the nearby worker (`riders=N […] latency_ms=…`). Rebalance drills use `start:nearby` with the same `groupId`.
 
+### Q82. If ingestion is very high, do I need stream processing to batch or aggregate? Can a normal consumer group do it?
+
+**No — you do not need Streams/ksqlDB just to batch.** A normal consumer group can buffer and flush.
+
+| Approach | What it is good for |
+| --- | --- |
+| **Consumer group (Nest / KafkaJS)** | Micro-batching: collect N messages or wait T ms, then one Redis write / one DB insert / one outbound publish. RideStream’s `eachMessage` is one-at-a-time; you can still keep an in-memory buffer (or use `eachBatch`) and commit after the flush. |
+| **ksqlDB / Kafka Streams** | Continuous **windowed** aggregates (tumbling/hopping), event-time vs processing-time, fault-tolerant state, and SQL/declarative pipelines — what Phase 4 anomalies use. |
+
+High rate alone is not the reason to pick streaming. Pick streaming when you need **rolling windows, late data, or durable aggregation state** across restarts/rebalances. For “every 100 GPS points → one update” or “every 1s flush nearby summary,” a consumer group + buffer (and often Redis) is enough.
+
+Caveats in a plain consumer: in-memory buffers are lost on crash (at-least-once → rebuild or accept duplicates); partition assignment means each member only sees its partitions — cross-partition aggregates need a shared store (Redis) or a Streams/ksqlDB job.
+
 ---
 
 ## Quick command cheat sheet
@@ -821,4 +834,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after nearby fan-out replaced the GPS printer (Q80–Q81).*
+*Last updated after Q82 (batching vs stream processing).*

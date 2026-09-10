@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 7 — Live clients (Redis GEO + Pub/Sub + WebSocket). Capstone fan-out via nearby worker is in place; typed events + client UI still open.
+**Status:** Phase 7 — Live clients (Redis GEO + Pub/Sub + WebSocket + live feed UI). Typed event names still open; Phase 8 cluster is next.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -294,18 +294,20 @@ ride-stream/
 │   └── grafana/
 ├── docs/
 │   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
+├── client/                     # Phase 7: live feed UI (served by gateway)
 ├── ksql/                       # Phase 4: ksqlDB statements (streams, anomaly queries)
 ├── src/
 │   ├── drivers/
 │   │   ├── producer/           # Driver GPS simulator → gps-events-driver
 │   │   └── consumer/
+│   │       ├── printer/        # GPS printer
 │   │       ├── nearby/         # Driver GPS → GEOSEARCH → PUBLISH user:{riderId}
 │   │       └── eta/            # ETA calculator → eta-updates
 │   ├── riders/
 │   │   ├── producer/           # Rider GPS simulator → gps-events-rider
 │   │   └── consumer/
 │   │       └── geo/            # Rider GPS → Redis GEOADD
-│   ├── gateway/                # Socket.IO + Redis Pub/Sub
+│   ├── gateway/                # Socket.IO + Redis Pub/Sub (+ static UI)
 │   └── shared/
 │       ├── kafka/              # Kafka client, Schema Registry, Avro schemas
 │       └── redis/              # Redis client (GEO + Pub/Sub helpers)
@@ -409,8 +411,8 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:rider-producer:dev` | Rider producer with watch mode |
 | `npm run start:rider-geo` | Rider GEO consumer (`gps-events-rider` → Redis GEO) |
 | `npm run start:rider-geo:dev` | Rider GEO consumer with watch mode |
-| `npm run start:gateway` | WebSocket gateway (Socket.IO on `GATEWAY_PORT`) |
-| `npm run start:gateway:dev` | WebSocket gateway with watch mode |
+| `npm run start:gateway` | WebSocket gateway + live feed UI on `GATEWAY_PORT` |
+| `npm run start:gateway:dev` | Gateway with watch mode |
 | `npm run emit:test` | Redis `PUBLISH user:{id}` → gateway → Socket.IO `drivers` (no Kafka) |
 | `npm run start:nearby` | Nearby fan-out (`gps-events-driver` → GEOSEARCH → `PUBLISH user:{riderId}`) |
 | `npm run start:nearby:dev` | Nearby fan-out with watch mode |
@@ -609,7 +611,20 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 - [x] Nest WebSocket gateway — connect + join `user:{userId}` + Redis Pub/Sub `SUBSCRIBE` / `PUBLISH`
 - [x] Fan-out driver updates via GEOSEARCH + Redis `PUBLISH user:{riderId}`
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
-- [ ] Simple client UI that renders the live feed
+- [x] Simple client UI that renders the live feed (`client/`, served at `http://localhost:3001/`)
+
+**Live feed demo**
+
+```bash
+# Redis + Kafka stack up, then:
+npm run start:gateway
+# open http://localhost:3001/ → Connect & join as rider-001
+
+# Smoke without the full pipeline:
+npm run emit:test -- rider-001 '{"driver_id":"driver-001","latitude":30.04,"longitude":31.23,"speed_kmh":42,"status":"available"}'
+
+# Or full path: rider-producer + rider-geo + producer + nearby → UI updates
+```
 
 ### Phase 8 — Cluster (future)
 

@@ -55,6 +55,16 @@ npm run emit:test -- rider-001 '{"lat":30.04,"lon":31.23}'
 
 Or in Redis Insight: `PUBLISH user:rider-001 '{"hello":true}'`.
 
+## Live feed UI
+
+The gateway serves [`client/index.html`](../client/index.html) at `http://localhost:3001/`.
+
+1. Start Redis + `npm run start:gateway`
+2. Open the page, keep `rider-001`, click **Connect & join**
+3. Run `npm run emit:test -- rider-001 '{"driver_id":"driver-001",...}'` or the nearby worker path
+
+The page listens for Socket.IO event `drivers`, shows a latest-per-driver table, and an event log.
+
 ## Adapter vs Pub/Sub (why this repo uses Pub/Sub)
 
 | | Redis Pub/Sub (this path) | Socket.IO Redis adapter |

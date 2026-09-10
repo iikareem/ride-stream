@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RideStream — live feed</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        --bg: #0e1114;
+        --panel: #161b20;
+        --line: #2a323a;
+        --text: #e8edf2;
+        --muted: #8b969f;
+        --accent: #f0a45d;
+        --ok: #5ecf8e;
+        --warn: #e6c35c;
+        --bad: #e07070;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "IBM Plex Sans", system-ui, sans-serif;
+        background:
+          radial-gradient(ellipse 80% 50% at 10% -10%, #1c2830 0%, transparent 55%),
+          var(--bg);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 3rem;
+      }
+
+      .brand {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.8rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin: 0 0 0.5rem;
+      }
+
+      h1 {
+        font-size: 1.75rem;
+        font-weight: 600;
+        margin: 0 0 0.35rem;
+        letter-spacing: -0.02em;
+      }
+
+      .lede {
+        color: var(--muted);
+        margin: 0 0 1.75rem;
+        max-width: 36rem;
+        line-height: 1.5;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 1rem;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 0.75rem;
+        align-items: end;
+      }
+
+      @media (max-width: 640px) {
+        .controls {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      label {
+        display: block;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.7rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+
+      input {
+        width: 100%;
+        padding: 0.65rem 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+        font: 500 0.95rem "IBM Plex Mono", monospace;
+      }
+
+      input:focus {
+        outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+        outline-offset: 1px;
+      }
+
+      button {
+        padding: 0.7rem 1.1rem;
+        border: none;
+        border-radius: 6px;
+        background: var(--accent);
+        color: #1a1208;
+        font: 600 0.9rem "IBM Plex Sans", sans-serif;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      button:hover {
+        filter: brightness(1.06);
+      }
+
+      button.secondary {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--line);
+      }
+
+      .actions {
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      .status-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.25rem;
+        align-items: center;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.8rem;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .dot {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--bad);
+      }
+
+      .dot.connected {
+        background: var(--warn);
+      }
+
+      .dot.joined {
+        background: var(--ok);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 50%, transparent);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1.1fr;
+        gap: 1rem;
+      }
+
+      @media (max-width: 800px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .panel h2 {
+        margin: 0 0 0.85rem;
+        font-size: 0.85rem;
+        font-family: "IBM Plex Mono", monospace;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      #map {
+        height: 420px;
+        width: 100%;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #1a2228;
+      }
+
+      .driver-marker {
+        position: relative;
+        width: 0;
+        height: 0;
+      }
+
+      .driver-pulse {
+        position: absolute;
+        left: -14px;
+        top: -14px;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: color-mix(in srgb, var(--accent) 35%, transparent);
+        animation: pulse-ring 1.6s ease-out infinite;
+        pointer-events: none;
+      }
+
+      .driver-dot {
+        position: absolute;
+        left: -6px;
+        top: -6px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--accent);
+        border: 2px solid #1a1208;
+        box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent);
+        transition: transform 180ms ease, box-shadow 180ms ease;
+      }
+
+      .driver-marker.moving .driver-dot {
+        transform: scale(1.2);
+        box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 80%, transparent);
+      }
+
+      .driver-marker.arrive .driver-dot {
+        animation: arrive-pop 420ms ease;
+      }
+
+      .driver-label {
+        position: absolute;
+        left: 10px;
+        top: -11px;
+        background: color-mix(in srgb, var(--panel) 92%, transparent);
+        border: 1px solid var(--accent);
+        color: var(--text);
+        border-radius: 4px;
+        padding: 2px 7px;
+        font: 600 0.7rem "IBM Plex Mono", monospace;
+        white-space: nowrap;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+        transform: translateY(0);
+        transition: transform 200ms ease, border-color 200ms ease;
+      }
+
+      .driver-marker.moving .driver-label {
+        border-color: #ffd09a;
+        transform: translateY(-2px);
+      }
+
+      @keyframes pulse-ring {
+        0% {
+          transform: scale(0.55);
+          opacity: 0.75;
+        }
+        100% {
+          transform: scale(1.7);
+          opacity: 0;
+        }
+      }
+
+      @keyframes arrive-pop {
+        0% {
+          transform: scale(1);
+        }
+        40% {
+          transform: scale(1.35);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      .leaflet-container {
+        font: inherit;
+        background: #1a2228;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.78rem;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 0.45rem 0.35rem;
+        border-bottom: 1px solid var(--line);
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      #feed {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 22rem;
+        overflow: auto;
+      }
+
+      #feed li {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.75rem;
+        padding: 0.55rem 0;
+        border-bottom: 1px solid var(--line);
+        line-height: 1.45;
+      }
+
+      #feed li .meta {
+        color: var(--muted);
+      }
+
+      #feed li .id {
+        color: var(--accent);
+      }
+
+      .empty {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 0;
+      }
+
+      .hint {
+        margin-top: 1rem;
+        font-size: 0.8rem;
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .hint code {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.75rem;
+        color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="brand">RideStream</p>
+      <h1>Live nearby feed</h1>
+      <p class="lede">
+        Join as a rider. Drivers appear on the map with their IDs when the
+        gateway pushes <code>drivers</code> events.
+      </p>
+
+      <section class="panel">
+        <div class="controls">
+          <div>
+            <label for="userId">Rider userId</label>
+            <input id="userId" value="rider-001" autocomplete="off" />
+          </div>
+          <div>
+            <label for="gatewayUrl">Gateway URL</label>
+            <input id="gatewayUrl" value="" autocomplete="off" />
+          </div>
+          <div class="actions">
+            <button type="button" id="connectBtn">Connect &amp; join</button>
+            <button type="button" id="disconnectBtn" class="secondary">
+              Disconnect
+            </button>
+          </div>
+        </div>
+        <div class="status-row" style="margin-top: 1rem">
+          <span class="pill">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusText">disconnected</span>
+          </span>
+          <span id="roomText" class="meta"></span>
+          <span id="countText"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Map</h2>
+        <div id="map" role="img" aria-label="Live driver positions"></div>
+      </section>
+
+      <div class="grid">
+        <section class="panel">
+          <h2>Latest drivers</h2>
+          <div id="latestEmpty" class="empty">Waiting for updates…</div>
+          <table id="latestTable" hidden>
+            <thead>
+              <tr>
+                <th>Driver</th>
+                <th>Lat</th>
+                <th>Lon</th>
+                <th>km/h</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="latestBody"></tbody>
+          </table>
+        </section>
+
+        <section class="panel">
+          <h2>Event log</h2>
+          <ul id="feed"></ul>
+          <p id="feedEmpty" class="empty">No events yet.</p>
+        </section>
+      </div>
+
+      <p class="hint">
+        Smoke without Kafka:
+        <code>npm run emit:test -- rider-001 '{"driver_id":"driver-001","latitude":30.0444,"longitude":31.2357,"speed_kmh":42,"status":"available"}'</code>
+      </p>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const MAX_FEED = 80;
+      const CAIRO = [30.0444, 31.2357];
+      const MOVE_MS = 750;
+      const TRAIL_MAX = 12;
+      const latestByDriver = new Map();
+      /** @type {Map<string, { marker: L.Marker, trail: L.Polyline, raf: number|null, from: L.LatLng, to: L.LatLng }>} */
+      const markersByDriver = new Map();
+      let socket = null;
+      let eventCount = 0;
+      let mapFittedOnce = false;
+
+      const els = {
+        userId: document.getElementById("userId"),
+        gatewayUrl: document.getElementById("gatewayUrl"),
+        connectBtn: document.getElementById("connectBtn"),
+        disconnectBtn: document.getElementById("disconnectBtn"),
+        statusDot: document.getElementById("statusDot"),
+        statusText: document.getElementById("statusText"),
+        roomText: document.getElementById("roomText"),
+        countText: document.getElementById("countText"),
+        feed: document.getElementById("feed"),
+        feedEmpty: document.getElementById("feedEmpty"),
+        latestEmpty: document.getElementById("latestEmpty"),
+        latestTable: document.getElementById("latestTable"),
+        latestBody: document.getElementById("latestBody"),
+      };
+
+      els.gatewayUrl.value = window.location.origin;
+
+      const map = L.map("map", { zoomControl: true }).setView(CAIRO, 12);
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+        subdomains: "abcd",
+        maxZoom: 19,
+      }).addTo(map);
+
+      function easeOutCubic(t) {
+        return 1 - Math.pow(1 - t, 3);
+      }
+
+      function driverIcon(driverId) {
+        return L.divIcon({
+          className: "",
+          html:
+            `<div class="driver-marker" data-id="${escapeHtml(driverId)}">` +
+            `<span class="driver-pulse"></span>` +
+            `<span class="driver-dot"></span>` +
+            `<span class="driver-label">${escapeHtml(driverId)}</span>` +
+            `</div>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+        });
+      }
+
+      function markerEl(marker) {
+        return marker.getElement()?.querySelector(".driver-marker") ?? null;
+      }
+
+      function setMoving(marker, on) {
+        const el = markerEl(marker);
+        if (!el) return;
+        el.classList.toggle("moving", on);
+        if (!on) {
+          el.classList.remove("arrive");
+          // restart arrive animation
+          void el.offsetWidth;
+          el.classList.add("arrive");
+        }
+      }
+
+      function animateMarker(entry, nextLatLng) {
+        if (entry.raf != null) {
+          cancelAnimationFrame(entry.raf);
+          entry.raf = null;
+        }
+
+        const start = entry.marker.getLatLng();
+        const dist = start.distanceTo(nextLatLng);
+        if (dist < 0.5) {
+          entry.marker.setLatLng(nextLatLng);
+          entry.from = nextLatLng;
+          entry.to = nextLatLng;
+          return;
+        }
+
+        entry.from = start;
+        entry.to = nextLatLng;
+        const duration = Math.min(1200, Math.max(400, MOVE_MS * (dist > 800 ? 1.2 : 1)));
+        const t0 = performance.now();
+        setMoving(entry.marker, true);
+
+        const step = (now) => {
+          const t = Math.min(1, (now - t0) / duration);
+          const e = easeOutCubic(t);
+          const lat = entry.from.lat + (entry.to.lat - entry.from.lat) * e;
+          const lng = entry.from.lng + (entry.to.lng - entry.from.lng) * e;
+          const here = L.latLng(lat, lng);
+          entry.marker.setLatLng(here);
+
+          const pts = entry.trail.getLatLngs();
+          pts.push(here);
+          while (pts.length > TRAIL_MAX) pts.shift();
+          entry.trail.setLatLngs(pts);
+
+          if (t < 1) {
+            entry.raf = requestAnimationFrame(step);
+          } else {
+            entry.raf = null;
+            entry.from = entry.to;
+            setMoving(entry.marker, false);
+          }
+        };
+
+        entry.raf = requestAnimationFrame(step);
+      }
+
+      function upsertMarker(driver) {
+        const id = driver.driver_id;
+        const lat = Number(driver.latitude);
+        const lon = Number(driver.longitude);
+        if (!id || Number.isNaN(lat) || Number.isNaN(lon)) return;
+
+        const next = L.latLng(lat, lon);
+        const existing = markersByDriver.get(id);
+        if (existing) {
+          existing.marker.setPopupContent(popupHtml(driver));
+          animateMarker(existing, next);
+          return;
+        }
+
+        const trail = L.polyline([next], {
+          color: "#f0a45d",
+          weight: 2,
+          opacity: 0.35,
+          lineCap: "round",
+          interactive: false,
+        }).addTo(map);
+
+        const marker = L.marker(next, { icon: driverIcon(id), riseOnHover: true })
+          .addTo(map)
+          .bindPopup(popupHtml(driver));
+
+        const entry = {
+          marker,
+          trail,
+          raf: null,
+          from: next,
+          to: next,
+        };
+        markersByDriver.set(id, entry);
+
+        requestAnimationFrame(() => {
+          const el = markerEl(marker);
+          if (el) {
+            el.classList.add("arrive");
+          }
+        });
+        fitMapToDrivers();
+      }
+
+      function popupHtml(driver) {
+        return [
+          `<strong>${escapeHtml(String(driver.driver_id))}</strong>`,
+          `status: ${escapeHtml(String(driver.status ?? "—"))}`,
+          `speed: ${driver.speed_kmh ?? "—"} km/h`,
+          `${fmt(driver.latitude)}, ${fmt(driver.longitude)}`,
+        ].join("<br/>");
+      }
+
+      function fitMapToDrivers() {
+        const pts = [...markersByDriver.values()].map((e) => e.marker.getLatLng());
+        if (pts.length === 0) return;
+        if (pts.length === 1) {
+          map.setView(pts[0], mapFittedOnce ? map.getZoom() : 14, {
+            animate: true,
+            duration: 0.6,
+          });
+          mapFittedOnce = true;
+          return;
+        }
+        map.fitBounds(L.latLngBounds(pts), {
+          padding: [48, 48],
+          maxZoom: 15,
+          animate: true,
+        });
+        mapFittedOnce = true;
+      }
+
+      function setStatus(kind, text) {
+        els.statusDot.className = "dot" + (kind ? " " + kind : "");
+        els.statusText.textContent = text;
+      }
+
+      function fmt(n) {
+        if (typeof n !== "number" || Number.isNaN(n)) return "—";
+        return n.toFixed(5);
+      }
+
+      function renderLatest() {
+        if (latestByDriver.size === 0) {
+          els.latestEmpty.hidden = false;
+          els.latestTable.hidden = true;
+          return;
+        }
+        els.latestEmpty.hidden = true;
+        els.latestTable.hidden = false;
+        const rows = [...latestByDriver.values()]
+          .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+          .map(
+            (d) =>
+              `<tr>
+                <td>${escapeHtml(d.driver_id ?? "?")}</td>
+                <td>${fmt(d.latitude)}</td>
+                <td>${fmt(d.longitude)}</td>
+                <td>${d.speed_kmh ?? "—"}</td>
+                <td>${escapeHtml(String(d.status ?? "—"))}</td>
+              </tr>`,
+          );
+        els.latestBody.innerHTML = rows.join("");
+      }
+
+      function prependFeed(payload) {
+        els.feedEmpty.hidden = true;
+        const li = document.createElement("li");
+        const when = new Date().toLocaleTimeString();
+        const id = payload?.driver_id ?? "event";
+        li.innerHTML =
+          `<span class="meta">${when}</span> ` +
+          `<span class="id">${escapeHtml(String(id))}</span> ` +
+          `<span>${escapeHtml(JSON.stringify(payload))}</span>`;
+        els.feed.prepend(li);
+        while (els.feed.children.length > MAX_FEED) {
+          els.feed.removeChild(els.feed.lastChild);
+        }
+      }
+
+      function onDrivers(payload) {
+        eventCount += 1;
+        els.countText.textContent = `${eventCount} event${eventCount === 1 ? "" : "s"}`;
+        if (payload && typeof payload === "object" && payload.driver_id) {
+          latestByDriver.set(payload.driver_id, payload);
+          renderLatest();
+          upsertMarker(payload);
+        }
+        prependFeed(payload);
+      }
+
+      function disconnect() {
+        if (socket) {
+          socket.removeAllListeners();
+          socket.disconnect();
+          socket = null;
+        }
+        setStatus("", "disconnected");
+        els.roomText.textContent = "";
+      }
+
+      async function connectAndJoin() {
+        disconnect();
+        const userId = els.userId.value.trim();
+        const url = els.gatewayUrl.value.trim() || window.location.origin;
+        if (!userId) {
+          setStatus("", "userId required");
+          return;
+        }
+
+        setStatus("connected", "connecting…");
+        socket = io(url, { transports: ["websocket", "polling"] });
+
+        socket.on("connect", () => {
+          setStatus("connected", `connected (${socket.id})`);
+          socket.emit("join", { userId }, (ack) => {
+            if (!ack?.ok) {
+              setStatus("connected", ack?.error || "join failed");
+              return;
+            }
+            setStatus("joined", "joined");
+            els.roomText.textContent = ack.room || `user:${userId}`;
+          });
+        });
+
+        socket.on("drivers", onDrivers);
+        socket.on("disconnect", () => setStatus("", "disconnected"));
+        socket.on("connect_error", (err) => {
+          setStatus("", `error: ${err.message}`);
+        });
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      els.connectBtn.addEventListener("click", connectAndJoin);
+      els.disconnectBtn.addEventListener("click", disconnect);
+    </script>
+  </body>
+</html>
