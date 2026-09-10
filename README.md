@@ -610,7 +610,6 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 - [x] Consumer **GEOADD** riders from `gps-events-rider`
 - [x] Nest WebSocket gateway — connect + join `user:{userId}` + Redis Pub/Sub `SUBSCRIBE` / `PUBLISH`
 - [x] Fan-out driver updates via GEOSEARCH + Redis `PUBLISH user:{riderId}`
-- [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [x] Simple client UI that renders the live feed (`client/`, served at `http://localhost:3001/`)
 
 **Live feed demo**
