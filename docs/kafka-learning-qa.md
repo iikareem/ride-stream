@@ -120,10 +120,10 @@ Producer:
 npm run start:producer
 ```
 
-Consumer:
+Consumer (nearby fan-out):
 
 ```bash
-npm run start:consumer
+npm run start:nearby
 ```
 
 Separate Nest processes on purpose.
@@ -144,7 +144,7 @@ Separate Nest processes on purpose.
 
 ### Q11. Is the current consumer a single consumer with no group, reading all partitions?
 
-It **uses a consumer group**: `ridestream-gps-printer`.
+It **uses a consumer group**: `ridestream-nearby` (earlier learning used `ridestream-gps-printer`; that worker was replaced by nearby fan-out).
 
 Right now that group has **one member**, so that member gets **all** partitions. Still a group — just size 1.
 
@@ -178,9 +178,10 @@ Right now each command can run alone.
 
 | Service | Topic(s) | groupId |
 | --- | --- | --- |
-| GPS printer | `gps-events-driver` | `ridestream-gps-printer` |
+| Nearby fan-out | `gps-events-driver` → Redis PUBLISH | `ridestream-nearby` |
 | ETA | `gps-events-driver` → `eta-updates` | `ridestream-eta` |
-| Anomaly | `gps-events-driver` → `driver-anomalies` | `ridestream-anomaly` |
+| Rider GEO | `gps-events-rider` → Redis GEOADD | `ridestream-rider-geo` |
+| Anomaly | `gps-events-driver` → `driver-anomalies` | ksqlDB (not a Nest group) |
 
 Same topic + **different** groups = each service gets a full independent stream (own offsets).  
 Same topic + **same** group = replicas sharing partitions for scale.
@@ -217,7 +218,7 @@ Max useful members ≈ number of partitions (6 here).
 
 ---
 
-### Q18. If I run `start:consumer` twice, does Kafka rebalance and split partitions roughly in half?
+### Q18. If I run `start:nearby` twice, does Kafka rebalance and split partitions roughly in half?
 
 **Yes**, if both use the same `groupId`. Often ~3 and ~3 (not always exact). Each message goes to **only one** member of that group.
 
@@ -295,14 +296,14 @@ Almost:
 
 Three ways:
 
-**1. Terminal logs (added to the GPS printer)** — start two consumers:
+**1. Terminal logs (nearby / ETA)** — start two members of the same group:
 
 ```bash
 # terminal A
-npm run start:consumer
+npm run start:nearby
 
 # terminal B
-npm run start:consumer
+npm run start:nearby
 ```
 
 Look for:
@@ -311,14 +312,14 @@ Look for:
 
 Stop one (Ctrl+C) → the other rebalances and takes more partitions.
 
-**2. Kafka UI** — http://localhost:8080 → Consumer Groups → `ridestream-gps-printer` → members + partitions.
+**2. Kafka UI** — http://localhost:8080 → Consumer Groups → `ridestream-nearby` → members + partitions.
 
 **3. CLI:**
 
 ```bash
 docker exec ridestream-broker kafka-consumer-groups \
   --bootstrap-server localhost:9092 \
-  --describe --group ridestream-gps-printer
+  --describe --group ridestream-nearby
 ```
 
 Shows each member and which partitions it owns, plus lag.
@@ -539,9 +540,9 @@ Next learning target when you are ready: Phase 3 — separate consumer groups (E
 
 ## H. Phase 3a — ETA Calculator
 
-### Q48. Why a separate consumer group for ETA instead of extending the printer?
+### Q48. Why a separate consumer group for ETA instead of extending the nearby worker?
 
-Different **jobs** need different **offsets**. The printer and ETA calculator both read `gps-events-driver` but must not share a group id. Same group would split partitions between them and each would miss half the drivers. Separate groups (`ridestream-gps-printer` vs `ridestream-eta`) each get the full stream.
+Different **jobs** need different **offsets**. Nearby fan-out and the ETA calculator both read `gps-events-driver` but must not share a group id. Same group would split partitions between them and each would miss half the drivers. Separate groups (`ridestream-nearby` vs `ridestream-eta`) each get the full stream.
 
 ---
 
@@ -745,13 +746,33 @@ A role-based split breaks on workers that do both. ETA consumes `gps-events-driv
 
 ```text
 src/
-  drivers/{producer, consumer/{printer, eta}}
+  drivers/{producer, consumer/{nearby, eta}}
   riders/{producer, consumer/{geo}}
   gateway/
   shared/{kafka, redis}
 ```
 
-Each consumer job owns a folder, so adding one (for example nearby-driver fan-out) does not disturb the others. ETA sits under `consumer/` because that is its primary role; it still publishes a derived topic.
+Each consumer job owns a folder, so adding one does not disturb the others. ETA sits under `consumer/` because that is its primary role; it still publishes a derived topic.
+
+---
+
+## N. Phase 7 — Nearby fan-out (GEOSEARCH → PUBLISH)
+
+### Q80. How does a driver GPS update reach nearby riders?
+
+```text
+gps-events-driver
+  → NearbyNotifyService (group ridestream-nearby)
+  → GEOSEARCH riders:geo around driver (NEARBY_RADIUS_KM)
+  → for each rider_id: PUBLISH user:{rider_id} JSON(driver GPS)
+  → gateway SUBSCRIBE → emit('drivers', payload)
+```
+
+Rider positions must already be in Redis via `start:rider-geo`. Empty GEO → zero publishes (logged as `riders=0`).
+
+### Q81. Why replace the GPS printer with nearby?
+
+The printer only logged. Nearby is the Phase 7 side effect that proves the live path: Kafka → Redis GEO match → Pub/Sub → WebSocket. Logging stays on the nearby worker (`riders=N […] latency_ms=…`). Rebalance drills use `start:nearby` with the same `groupId`.
 
 ---
 
@@ -771,20 +792,23 @@ docker compose up -d --force-recreate init-topics
 # Apps
 npm run start:producer
 npm run start:eta            # gps-events-driver → eta-updates (Nest EOS txn)
-npm run start:consumer       # optional GPS printer
+npm run start:rider-producer
+npm run start:rider-geo      # gps-events-rider → GEOADD riders:geo
+npm run start:nearby         # gps-events-driver → GEOSEARCH → PUBLISH user:*
+npm run start:gateway
 
 # Latency / lag drills
 CONSUME_FROM_BEGINNING=false npm run start:eta
 PROCESSING_DELAY_MS=2000 CONSUME_FROM_BEGINNING=false npm run start:eta
 
 # Rebalance drill — two terminals, same group
-npm run start:eta
-npm run start:eta
+npm run start:nearby
+npm run start:nearby
 
 # Lag describe
 docker exec ridestream-broker kafka-consumer-groups \
   --bootstrap-server localhost:9092 \
-  --describe --group ridestream-eta
+  --describe --group ridestream-nearby
 
 # Schema Registry
 curl -s http://localhost:8081/subjects
@@ -797,4 +821,4 @@ open http://localhost:8080
 
 ---
 
-*Last updated after Phase 7 gateway Pub/Sub and the domain restructure (Q66–Q79).*
+*Last updated after nearby fan-out replaced the GPS printer (Q80–Q81).*

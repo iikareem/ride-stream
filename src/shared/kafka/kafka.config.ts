@@ -11,6 +11,7 @@ export const kafkaConfig = {
   etaTransactionalId:
     process.env.ETA_TRANSACTIONAL_ID ?? 'ridestream-eta-producer',
   riderGeoGroupId: process.env.RIDER_GEO_GROUP_ID ?? 'ridestream-rider-geo',
+  nearbyGroupId: process.env.NEARBY_GROUP_ID ?? 'ridestream-nearby',
   schemaRegistryUrl:
     process.env.SCHEMA_REGISTRY_URL ?? 'http://localhost:8081',
   driverCount: Number(process.env.DRIVER_COUNT ?? '10'),

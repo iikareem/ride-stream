@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 6 — Fault tolerance (broker restart / offset resume, lag growth, idempotent producer). Next: Phase 7 live clients (Redis + WebSocket).
+**Status:** Phase 7 — Live clients (Redis GEO + Pub/Sub + WebSocket). Capstone fan-out via nearby worker is in place; typed events + client UI still open.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -60,8 +60,8 @@ GPS producer ──Avro──▶ gps-events-driver
                           │
           ┌───────────────┼───────────────┬────────────────┐
           ▼               ▼               ▼                
-   gps-printer      ridestream-eta      ksqlDB
-   (log only)       (haversine ETA)   (SQL anomalies)
+   ridestream-nearby  ridestream-eta      ksqlDB
+   (GEOSEARCH+PUBLISH) (haversine ETA)   (SQL anomalies)
                           │               │
                           ▼               ▼
                      eta-updates    driver-anomalies
@@ -70,7 +70,7 @@ GPS producer ──Avro──▶ gps-events-driver
 | Component | Role |
 | --- | --- |
 | Producer | Simulates N drivers; Avro GPS to `gps-events-driver` |
-| `ridestream-gps-printer` | Decodes and logs GPS (independent group) |
+| `ridestream-nearby` | GEOSEARCH riders around driver → Redis `PUBLISH user:{riderId}` |
 | `ridestream-eta` | Decodes GPS, **transactional** publish of Avro ETA to `eta-updates` (EOS: produce + offset commit) |
 | **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events-driver` → `driver-anomalies` (optional EOS) |
 | Topics | `gps-events-driver`, `gps-events-rider`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
@@ -299,7 +299,7 @@ ride-stream/
 │   ├── drivers/
 │   │   ├── producer/           # Driver GPS simulator → gps-events-driver
 │   │   └── consumer/
-│   │       ├── printer/        # GPS printer
+│   │       ├── nearby/         # Driver GPS → GEOSEARCH → PUBLISH user:{riderId}
 │   │       └── eta/            # ETA calculator → eta-updates
 │   ├── riders/
 │   │   ├── producer/           # Rider GPS simulator → gps-events-rider
@@ -343,8 +343,8 @@ npm run start:producer
 # Terminal B — ETA calculator (gps-events-driver → eta-updates)
 npm run start:eta
 
-# Optional — print raw GPS
-npm run start:consumer
+# Terminal C — nearby fan-out (GEOSEARCH riders → PUBLISH user:{riderId})
+npm run start:nearby
 ```
 
 ### Local endpoints
@@ -381,10 +381,12 @@ Copy `.env.example` to `.env`:
 | `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
 | `RIDER_COUNT` | `10` | Simulated riders in the rider producer |
 | `RIDER_GEO_GROUP_ID` | `ridestream-rider-geo` | Rider GEO consumer group id |
+| `NEARBY_GROUP_ID` | `ridestream-nearby` | Nearby fan-out consumer group id |
+| `NEARBY_RADIUS_KM` | `2` | GEOSEARCH radius around driver (km) |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
 | `RIDERS_GEO_KEY` | `riders:geo` | Redis GEO key for rider positions |
 | `GATEWAY_PORT` | `3001` | Socket.IO gateway HTTP port |
-| `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id (printer group: `ridestream-gps-printer`) |
+| `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id |
 | `CONSUME_FROM_BEGINNING` | `true` | Replay earliest offsets (`false` = live tail only) |
 | `PROCESSING_DELAY_MS` | `0` | Artificial per-message sleep to grow lag |
 | `SESSION_TIMEOUT_MS` | `30000` | Broker kicks member if no heartbeat in this window |
@@ -410,8 +412,8 @@ Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, no
 | `npm run start:gateway` | WebSocket gateway (Socket.IO on `GATEWAY_PORT`) |
 | `npm run start:gateway:dev` | WebSocket gateway with watch mode |
 | `npm run emit:test` | Redis `PUBLISH user:{id}` → gateway → Socket.IO `drivers` (no Kafka) |
-| `npm run start:consumer` | GPS printer consumer |
-| `npm run start:consumer:dev` | Consumer with watch mode |
+| `npm run start:nearby` | Nearby fan-out (`gps-events-driver` → GEOSEARCH → `PUBLISH user:{riderId}`) |
+| `npm run start:nearby:dev` | Nearby fan-out with watch mode |
 | `npm run start:eta` | ETA calculator (`gps-events-driver` → `eta-updates`) |
 | `npm run start:eta:dev` | ETA calculator with watch mode |
 | `npm run build` | Compile TypeScript |
@@ -444,7 +446,7 @@ Each message sleeps 2s → consumer cannot keep up → Kafka UI lag rises. Set d
 
 ### Drill 3 — Rebalance (same groupId)
 
-Works for printer or ETA — use the **same** script twice:
+Works for nearby or ETA — use the **same** script twice:
 
 ```bash
 # Terminal 1
@@ -556,7 +558,7 @@ Nest keeps ETA. Anomalies move to **ksqlDB** continuous SQL on `gps-events-drive
 - [x] Windowed aggregates (tumbling / hopping) for spike counts
 - [x] Freeze + teleport heuristics (`04_freeze_teleport.sql`)
 - [x] `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
-- [x] Nest anomaly printer — **skipped** (same as gps-printer; verify with Kafka UI / `PRINT 'driver-anomalies'`)
+- [x] Nest anomaly printer — **skipped** (verify with Kafka UI / `PRINT 'driver-anomalies'`)
 
 ### Phase 5 — Observability (done)
 
@@ -605,7 +607,7 @@ Kafka consumers  →  Redis (SET latest + PUBLISH update)
 - [x] Redis in Docker Compose (GEO for riders)
 - [x] Consumer **GEOADD** riders from `gps-events-rider`
 - [x] Nest WebSocket gateway — connect + join `user:{userId}` + Redis Pub/Sub `SUBSCRIBE` / `PUBLISH`
-- [ ] Fan-out driver updates via GEOSEARCH + Redis `PUBLISH user:{riderId}`
+- [x] Fan-out driver updates via GEOSEARCH + Redis `PUBLISH user:{riderId}`
 - [ ] Typed live messages: `driver.location`, `driver.eta`, optional `chat.message`
 - [ ] Simple client UI that renders the live feed
 

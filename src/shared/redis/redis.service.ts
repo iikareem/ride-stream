@@ -48,6 +48,41 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.getClient().geoadd(key, longitude, latitude, member);
   }
 
+  /**
+   * Members within radiusKm of (longitude, latitude).
+   * Redis GEOSEARCH / FROMLONLAT order is longitude, latitude.
+   */
+  async geoSearchByRadius(
+    key: string,
+    longitude: number,
+    latitude: number,
+    radiusKm: number,
+  ): Promise<string[]> {
+    const result = await this.getClient().geosearch(
+      key,
+      'FROMLONLAT',
+      longitude,
+      latitude,
+      'BYRADIUS',
+      radiusKm,
+      'km',
+    );
+    return (result as Array<string | Buffer>).map((m) =>
+      typeof m === 'string' ? m : m.toString(),
+    );
+  }
+
+  /** PUBLISH to user:{userId} (gateway SUBSCRIBEs and emits to Socket.IO). */
+  async publishUser(
+    userId: string,
+    payload: string | Record<string, unknown>,
+  ): Promise<number> {
+    const channel = userChannel(userId);
+    const message =
+      typeof payload === 'string' ? payload : JSON.stringify(payload);
+    return this.getClient().publish(channel, message);
+  }
+
   /** Gateway registers one handler for all user-channel messages. */
   onUserChannelMessage(handler: MessageHandler): void {
     this.messageHandler = handler;
