@@ -3,6 +3,7 @@ import { KafkaService } from '../../shared/kafka/kafka.service';
 import { SchemaRegistryService } from '../../shared/kafka/schema-registry.service';
 import { kafkaConfig } from '../../shared/kafka/kafka.config';
 import { DriverStatus, GpsEvent } from '../../shared/kafka/gps-event';
+import { DEMO_MEETUP, DEMO_MEETUP_NUDGE } from '../../shared/demo-geo';
 
 const STATUSES: DriverStatus[] = ['available', 'en_route', 'on_trip'];
 
@@ -18,6 +19,8 @@ interface DriverState {
   longitude: number;
   status: DriverStatus;
   heading: number;
+  /** Stay near DEMO_MEETUP so nearby fan-out hits rider-001 in tests. */
+  pinnedToMeetup: boolean;
 }
 
 @Injectable()
@@ -34,7 +37,7 @@ export class GpsProducerService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     this.drivers = this.seedDrivers(kafkaConfig.driverCount);
     this.logger.log(
-      `Starting GPS producer: ${this.drivers.length} drivers → topic "${kafkaConfig.gpsEventsDriverTopic}" (Avro)`,
+      `Starting GPS producer: ${this.drivers.length} drivers → topic "${kafkaConfig.gpsEventsDriverTopic}" (Avro); driver-001 pinned near meetup ${DEMO_MEETUP.latitude},${DEMO_MEETUP.longitude}`,
     );
 
     const producer = await this.kafka.createProducer();
@@ -80,25 +83,47 @@ export class GpsProducerService implements OnModuleInit {
   }
 
   private seedDrivers(count: number): DriverState[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: `driver-${String(i + 1).padStart(3, '0')}`,
-      latitude: LAT_MIN + Math.random() * (LAT_MAX - LAT_MIN),
-      longitude: LON_MIN + Math.random() * (LON_MAX - LON_MIN),
-      status: STATUSES[Math.floor(Math.random() * STATUSES.length)],
-      heading: Math.random() * 360,
-    }));
+    return Array.from({ length: count }, (_, i) => {
+      const pinnedToMeetup = i === 0;
+      return {
+        id: `driver-${String(i + 1).padStart(3, '0')}`,
+        latitude: pinnedToMeetup
+          ? DEMO_MEETUP.latitude
+          : LAT_MIN + Math.random() * (LAT_MAX - LAT_MIN),
+        longitude: pinnedToMeetup
+          ? DEMO_MEETUP.longitude
+          : LON_MIN + Math.random() * (LON_MAX - LON_MIN),
+        status: STATUSES[Math.floor(Math.random() * STATUSES.length)],
+        heading: Math.random() * 360,
+        pinnedToMeetup,
+      };
+    });
   }
 
   private nudge(driver: DriverState): void {
+    const step = driver.pinnedToMeetup ? DEMO_MEETUP_NUDGE : 0.002;
+    const latMin = driver.pinnedToMeetup
+      ? DEMO_MEETUP.latitude - DEMO_MEETUP_NUDGE
+      : LAT_MIN;
+    const latMax = driver.pinnedToMeetup
+      ? DEMO_MEETUP.latitude + DEMO_MEETUP_NUDGE
+      : LAT_MAX;
+    const lonMin = driver.pinnedToMeetup
+      ? DEMO_MEETUP.longitude - DEMO_MEETUP_NUDGE
+      : LON_MIN;
+    const lonMax = driver.pinnedToMeetup
+      ? DEMO_MEETUP.longitude + DEMO_MEETUP_NUDGE
+      : LON_MAX;
+
     driver.latitude = this.clamp(
-      driver.latitude + (Math.random() - 0.5) * 0.002,
-      LAT_MIN,
-      LAT_MAX,
+      driver.latitude + (Math.random() - 0.5) * step,
+      latMin,
+      latMax,
     );
     driver.longitude = this.clamp(
-      driver.longitude + (Math.random() - 0.5) * 0.002,
-      LON_MIN,
-      LON_MAX,
+      driver.longitude + (Math.random() - 0.5) * step,
+      lonMin,
+      lonMax,
     );
     driver.heading = (driver.heading + (Math.random() - 0.5) * 20 + 360) % 360;
     if (Math.random() < 0.05) {

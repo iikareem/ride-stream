@@ -3,6 +3,7 @@ import { KafkaService } from '../../shared/kafka/kafka.service';
 import { SchemaRegistryService } from '../../shared/kafka/schema-registry.service';
 import { kafkaConfig } from '../../shared/kafka/kafka.config';
 import { RiderGpsEvent, RiderStatus } from '../../shared/kafka/rider-gps-event';
+import { DEMO_MEETUP, DEMO_MEETUP_NUDGE } from '../../shared/demo-geo';
 
 const STATUSES: RiderStatus[] = ['searching', 'waiting', 'on_trip'];
 
@@ -18,6 +19,8 @@ interface RiderState {
   longitude: number;
   status: RiderStatus;
   heading: number;
+  /** Stay near DEMO_MEETUP so driver-001 GEOSEARCH hits this rider in tests. */
+  pinnedToMeetup: boolean;
 }
 
 @Injectable()
@@ -34,7 +37,7 @@ export class RiderGpsProducerService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     this.riders = this.seedRiders(kafkaConfig.riderCount);
     this.logger.log(
-      `Starting rider GPS producer: ${this.riders.length} riders → topic "${kafkaConfig.gpsEventsRiderTopic}" (Avro)`,
+      `Starting rider GPS producer: ${this.riders.length} riders → topic "${kafkaConfig.gpsEventsRiderTopic}" (Avro); rider-001 pinned near meetup ${DEMO_MEETUP.latitude},${DEMO_MEETUP.longitude}`,
     );
 
     const producer = await this.kafka.createProducer();
@@ -79,25 +82,47 @@ export class RiderGpsProducerService implements OnModuleInit {
   }
 
   private seedRiders(count: number): RiderState[] {
-    return Array.from({ length: count }, (_, i) => ({
-      id: `rider-${String(i + 1).padStart(3, '0')}`,
-      latitude: LAT_MIN + Math.random() * (LAT_MAX - LAT_MIN),
-      longitude: LON_MIN + Math.random() * (LON_MAX - LON_MIN),
-      status: STATUSES[Math.floor(Math.random() * STATUSES.length)],
-      heading: Math.random() * 360,
-    }));
+    return Array.from({ length: count }, (_, i) => {
+      const pinnedToMeetup = i === 0;
+      return {
+        id: `rider-${String(i + 1).padStart(3, '0')}`,
+        latitude: pinnedToMeetup
+          ? DEMO_MEETUP.latitude
+          : LAT_MIN + Math.random() * (LAT_MAX - LAT_MIN),
+        longitude: pinnedToMeetup
+          ? DEMO_MEETUP.longitude
+          : LON_MIN + Math.random() * (LON_MAX - LON_MIN),
+        status: STATUSES[Math.floor(Math.random() * STATUSES.length)],
+        heading: Math.random() * 360,
+        pinnedToMeetup,
+      };
+    });
   }
 
   private nudge(rider: RiderState): void {
+    const step = rider.pinnedToMeetup ? DEMO_MEETUP_NUDGE : 0.002;
+    const latMin = rider.pinnedToMeetup
+      ? DEMO_MEETUP.latitude - DEMO_MEETUP_NUDGE
+      : LAT_MIN;
+    const latMax = rider.pinnedToMeetup
+      ? DEMO_MEETUP.latitude + DEMO_MEETUP_NUDGE
+      : LAT_MAX;
+    const lonMin = rider.pinnedToMeetup
+      ? DEMO_MEETUP.longitude - DEMO_MEETUP_NUDGE
+      : LON_MIN;
+    const lonMax = rider.pinnedToMeetup
+      ? DEMO_MEETUP.longitude + DEMO_MEETUP_NUDGE
+      : LON_MAX;
+
     rider.latitude = this.clamp(
-      rider.latitude + (Math.random() - 0.5) * 0.002,
-      LAT_MIN,
-      LAT_MAX,
+      rider.latitude + (Math.random() - 0.5) * step,
+      latMin,
+      latMax,
     );
     rider.longitude = this.clamp(
-      rider.longitude + (Math.random() - 0.5) * 0.002,
-      LON_MIN,
-      LON_MAX,
+      rider.longitude + (Math.random() - 0.5) * step,
+      lonMin,
+      lonMax,
     );
     rider.heading = (rider.heading + (Math.random() - 0.5) * 20 + 360) % 360;
     if (Math.random() < 0.05) {
