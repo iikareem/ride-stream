@@ -1,496 +1,138 @@
 # RideStream
 
-RideStream is a real-time GPS streaming pipeline that models the backend of a ride-sharing platform. Simulated drivers publish location events into Apache Kafka; NestJS workers consume them through independent consumer groups to derive ETAs. **Stream processing for anomalies uses ksqlDB** (SQL on Kafka), not Nest business logic.
+RideStream is a real-time event-processing system that models the location pipeline of a ride-sharing platform. It ingests simulated driver and rider GPS events, calculates ETAs, detects movement anomalies, finds nearby riders, and streams driver updates to a browser client.
 
-Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
+The project uses a three-broker Apache Kafka cluster in KRaft mode, Avro contracts backed by Schema Registry, independent NestJS consumers, ksqlDB stream processing, Redis geospatial indexing and Pub/Sub, Socket.IO, and a Prometheus/Grafana monitoring stack.
 
-**Status:** Phase 8 — 3-broker cluster (RF=3, `min.insync.replicas=2`). Typed live event names still open.
+## Features
 
-> **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
-
----
-
-## Scope
-
-What this project exercises end to end:
-
-- Partitioning strategy and message keys
-- Consumer groups, rebalancing, and offset commits
-- Avro serialization with Schema Registry and schema evolution
-- Stateful / windowed stream processing with **ksqlDB** (anomalies)
-- Consumer lag monitoring and fault-injection drills
-
-The full pipeline was proven on one broker first; Phase 8 runs the same path on a 3-broker cluster.
-
----
+- Three-broker Kafka cluster with replication factor 3
+- Six partitions per application topic
+- `min.insync.replicas=2` with unclean leader election disabled
+- Driver and rider GPS simulation
+- Avro serialization with backward-compatible schema evolution
+- Per-driver ordering through keyed Kafka messages
+- Transactional ETA processing with atomic output and offset commits
+- Speed, teleport, and GPS-freeze anomaly detection in ksqlDB
+- Tumbling and hopping window aggregations
+- Redis GEO indexing and nearby-rider lookup
+- Redis Pub/Sub fan-out through a Socket.IO gateway
+- Live browser feed for nearby driver updates
+- Consumer lag metrics, dashboards, and alerts
 
 ## Architecture
 
-### Target pipeline
+```text
+Driver producer ──Avro──▶ gps-events-driver
+                               │
+             ┌─────────────────┼──────────────────┐
+             │                 │                  │
+             ▼                 ▼                  ▼
+       ETA consumer      Nearby consumer       ksqlDB
+             │                 │                  │
+             ▼                 │                  ▼
+       eta-updates             │          anomaly topics
+                               │
+                               ▼
+                         Redis GEOSEARCH
+                               │
+                               ▼
+                         Redis Pub/Sub
+                               │
+                               ▼
+                      Socket.IO gateway
+                               │
+                               ▼
+                         Browser client
 
-```
-Drivers (Nest producers)
-        │
-        ▼
-  Kafka cluster (KRaft, 3 brokers, RF=3)
-        │
-        ├──▶ Nest ETA Calculator     → eta-updates
-        └──▶ ksqlDB                  → driver-anomalies
-                    │
-                    ▼
-             Prometheus + Grafana (Phase 5)
-
-  Capstone (Phase 7): Redis Pub/Sub → WebSocket live push to clients
-```
-
-### Why ksqlDB (Phase 4)
-
-| Approach | Role in RideStream |
-| --- | --- |
-| **Nest + KafkaJS** | Produce GPS, ETA, optional print/consume of anomalies |
-| **ksqlDB** | Continuous SQL on topics: filters, tumbling/hopping windows, aggregates → `driver-anomalies` |
-| Kafka Streams / Flink | Not used here; noted as heavier JVM alternatives for production |
-
-Nest does **not** embed ksqlDB. ksqlDB runs as its own Docker service, reads/writes Kafka topics; Nest only talks to topics (and optionally the ksqlDB REST API for admin).
-
-### Phase 3 (done) + Phase 4 (next)
-
-```
-GPS producer ──Avro──▶ gps-events-driver
-                          │
-          ┌───────────────┼───────────────┬────────────────┐
-          ▼               ▼               ▼                
-   ridestream-nearby  ridestream-eta      ksqlDB
-   (GEOSEARCH+PUBLISH) (haversine ETA)   (SQL anomalies)
-                          │               │
-                          ▼               ▼
-                     eta-updates    driver-anomalies
+Rider producer ──Avro──▶ gps-events-rider
+                               │
+                               ▼
+                        Rider GEO consumer
+                               │
+                               ▼
+                         Redis GEO index
 ```
 
-| Component | Role |
-| --- | --- |
-| Producer | Simulates N drivers; Avro GPS to `gps-events-driver` |
-| `ridestream-nearby` | GEOSEARCH riders around driver → Redis `PUBLISH user:{riderId}` |
-| `ridestream-eta` | Decodes GPS, **transactional** publish of Avro ETA to `eta-updates` (EOS: produce + offset commit) |
-| **ksqlDB** (Phase 4) | Docker service; SQL streams/tables on `gps-events-driver` → `driver-anomalies` (optional EOS) |
-| Topics | `gps-events-driver`, `gps-events-rider`, `eta-updates`, `driver-anomalies`, `driver-anomaly-windows`, `driver-anomaly-windows-hop`, `driver-anomalies-teleport`, `driver-anomalies-freeze` |
+Kafka consumers are organized into independent groups. Each group receives the complete topic stream and distributes its six partitions among the active members in that group.
 
-### Phase 4 Step 1 — ksqlDB infra
+## Processing model
 
-ksqlDB is up; anomaly SQL comes in later steps.
+### Kafka cluster
 
-```bash
-docker compose up -d
-docker compose ps
-# Recreate topics if the stack predates driver-anomalies:
-docker compose up -d --force-recreate init-topics
+The local cluster contains three combined broker/controller nodes:
 
-# Health
-curl -s http://localhost:8088/info
+- `broker-1` — host port `9092`
+- `broker-2` — host port `9093`
+- `broker-3` — host port `9094`
 
-# Interactive CLI (SHOW TOPICS; then Ctrl+D to exit)
-docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
-```
+Every application topic has six partitions and three replicas. One replica is the leader for a partition; the other two remain synchronized followers. Producers and consumers communicate with the current leader, while Kafka handles metadata refresh and leader changes.
 
-| Endpoint | URL |
-| --- | --- |
-| ksqlDB REST | `http://localhost:8088` |
-| Kafka UI | `http://localhost:8080` |
-| Schema Registry | `http://localhost:8081` |
+With `acks=all`, replication factor 3, and `min.insync.replicas=2`, the cluster can continue accepting writes after one broker failure. Writes stop when fewer than two in-sync replicas remain.
 
-SQL files live under [`ksql/`](ksql/) (mounted into the CLI container at `/ksql`).
+The three addresses in `KAFKA_BROKERS` are bootstrap endpoints. A client uses any available endpoint to discover topic metadata, then communicates directly with the broker leading each partition.
 
-### Phase 4 Step 2 — `CREATE STREAM gps_events`
-
-Registers the existing Avro topic so ksqlDB can query it. Nest must have produced at least once (so subject `gps-events-driver-value` exists in Schema Registry).
-
-```bash
-# 1) Infra + producer (registers Avro schema)
-docker compose up -d
-npm run start:producer
-
-# 2) Apply stream definition
-docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
-```
-
-In the CLI:
-
-```sql
-RUN SCRIPT '/ksql/01_gps_stream.sql';
-
-SHOW STREAMS;
-DESCRIBE gps_events;
-
-SET 'auto.offset.reset' = 'earliest';
-SELECT DRIVER_ID, LATITUDE, LONGITUDE, SPEED_KMH, STATUS
-FROM gps_events
-EMIT CHANGES
-LIMIT 5;
-```
-
-Expect rows while the Nest producer is running. Stop the push query with `Ctrl+C`. Statement source: [`ksql/01_gps_stream.sql`](ksql/01_gps_stream.sql).
-
-### Phase 4 Step 3 — speed spikes → `driver-anomalies`
-
-Persistent query: keep reading `gps_events`, filter high speed, write JSON to topic `driver-anomalies`.
-
-```bash
-npm run start:producer
-docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
-```
-
-```sql
--- if Step 2 not applied yet:
-RUN SCRIPT '/ksql/01_gps_stream.sql';
-
-RUN SCRIPT '/ksql/02_speed_spikes.sql';
-
-SHOW STREAMS;
-SHOW QUERIES;
-
-SET 'auto.offset.reset' = 'earliest';
-PRINT 'driver-anomalies' FROM BEGINNING;
--- or: SELECT * FROM speed_spikes EMIT CHANGES LIMIT 10;
-```
-
-Threshold in the SQL is **`SPEED_KMH > 50`** so the current Nest producer (speeds ~5–60) can generate hits. Raise it to `120` later for a stricter rule.
-
-Source: [`ksql/02_speed_spikes.sql`](ksql/02_speed_spikes.sql).
-
-### Phase 4 Step 4 — windowed spike counts
-
-Step 3 emits **every** fast GPS point. Step 4 **counts** how many fast points a driver had in a time window, and only emits when the count is high enough (`HAVING COUNT(*) >= 2`).
-
-| Window | Meaning | Output topic |
-| --- | --- | --- |
-| **Tumbling** `SIZE 1 MINUTE` | Non-overlapping 1-minute buckets | `driver-anomaly-windows` |
-| **Hopping** `SIZE 1 MINUTE, ADVANCE BY 15 SECONDS` | Overlapping windows (slide every 15s) | `driver-anomaly-windows-hop` |
-
-These are **`CREATE TABLE … AS SELECT`** (aggregates), not streams — each key holds the latest count for that window.
-
-```bash
-docker compose up -d --force-recreate init-topics   # creates the two window topics
-npm run start:producer
-docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
-```
-
-```sql
--- recreate (old tables lack DRIVER_ID in the value)
-DROP TABLE IF EXISTS spike_counts_tumbling DELETE TOPIC;
-DROP TABLE IF EXISTS spike_counts_hopping DELETE TOPIC;
--- then: docker compose up -d --force-recreate init-topics
-
-RUN SCRIPT '/ksql/03_spike_windows.sql';
-
-SHOW TABLES;
-SHOW QUERIES;
-
-PRINT 'driver-anomaly-windows' FROM BEGINNING;
--- PRINT 'driver-anomaly-windows-hop' FROM BEGINNING;
-```
-
-JSON value includes `DRIVER_ID_VALUE` (ksqlDB 7.9 cannot alias both key and value as `DRIVER_ID`). The Kafka key may still look binary for windows.
-
-Source: [`ksql/03_spike_windows.sql`](ksql/03_spike_windows.sql).
-
-### Phase 4 Step 5 — freeze + teleport (SQL heuristics)
-
-More anomaly types **in ksqlDB**, still no Nest detection logic.
-
-| Query | Pattern | Output |
-| --- | --- | --- |
-| `latest_gps` | Table: last lat/lon/ts per driver | changelog (internal / derived) |
-| `gps_teleports` | Stream ⋈ table: `GEO_DISTANCE` to previous point > 0.25 km | `driver-anomalies-teleport` |
-| `gps_freeze` | 2-min tumbling: almost no lat/lon span + low avg speed | `driver-anomalies-freeze` |
-
-```bash
-docker compose up -d --force-recreate init-topics
-npm run start:producer
-docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
-```
-
-```sql
-RUN SCRIPT '/ksql/04_freeze_teleport.sql';
-SHOW STREAMS;
-SHOW TABLES;
-SHOW QUERIES;
-
-PRINT 'driver-anomalies-teleport' FROM BEGINNING;
-PRINT 'driver-anomalies-freeze' FROM BEGINNING;
-```
-
-**Demo note:** the Nest producer only nudges ~0.002°. Real teleports/freezes may be rare until you temporarily inject jumps or stuck coordinates in the producer.
-
-#### What SQL fits vs what belongs in Nest later
-
-| Fits ksqlDB well | Harder / better in Nest (or Flink) later |
-| --- | --- |
-| Speed threshold, window counts | Route deviation (needs trip polyline / map match) |
-| Jump vs last point (`GEO_DISTANCE`) | Multi-signal ML / scoring |
-| “Barely moved for N minutes” freeze heuristic | Exact consecutive-sample physics with custom state machines |
-| Filters + tumbling/hopping aggregates | Rich per-driver state beyond SQL joins |
-
-Source: [`ksql/04_freeze_teleport.sql`](ksql/04_freeze_teleport.sql).
-
-### Phase 4 Step 6 — exactly-once (EOS) on ksqlDB
-
-Persistent queries use Kafka Streams transactions:
-
-```yaml
-# docker-compose.yml → ksqldb-server
-KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE: exactly_once_v2
-```
-
-```bash
-docker compose up -d --force-recreate ksqldb-server ksqldb-cli
-curl -s http://localhost:8088/info
-```
-
-**Important:** EOS applies to **new** persistent queries after restart. Queries created earlier keep their old guarantee — drop and re-`RUN SCRIPT` if you want them on EOS too.
-
-Optional per-session override before creating a query:
-
-```sql
-SET 'processing.guarantee' = 'exactly_once_v2';
-```
-
-EOS here = ksqlDB **read → process → write** as one transactional unit. Nest consumers of `driver-anomalies*` are still typically **at-least-once** unless you add idempotency.
-
-Notes: [`ksql/05_eos.md`](ksql/05_eos.md). Broker already has `transaction.state.log.*` for a single-node cluster.
-
----
-
-## Tech stack
-
-| Layer | Technology |
-| --- | --- |
-| Runtime | Node.js 20+, TypeScript |
-| Application | NestJS (separate entrypoints per worker) |
-| Kafka client | KafkaJS |
-| Broker | Confluent Kafka 7.9 (KRaft, single broker) |
-| Schema | Confluent Schema Registry + Avro |
-| Stream SQL (Phase 4) | **ksqlDB** (Docker; continuous queries on Kafka topics) |
-| Metrics (Phase 5) | kafka-exporter + Prometheus + Grafana |
-| Read model (Phase 7) | Redis (latest state + Pub/Sub) |
-| Live clients (Phase 7) | WebSocket push |
-| Local infra | Docker Compose |
-| Ops UI | Kafka UI (`localhost:8080`) |
-| Redis Insight | `localhost:5540` (preconfigured; host is Compose service `redis`, not `127.0.0.1`) |
-| ksqlDB UI/REST | `localhost:8088` |
-| Prometheus | `localhost:9090` |
-| Grafana | `localhost:3000` (admin / admin) |
-| kafka-exporter | `localhost:9308/metrics` |
-
----
-
-## Repository layout
-
-```
-ride-stream/
-├── docker-compose.yml          # Broker, Schema Registry, Kafka UI, Redis, Redis Insight, ksqlDB, monitoring
-├── monitoring/                 # Phase 5: Prometheus + Grafana + lag alerts
-│   ├── prometheus.yml
-│   ├── alerts.yml
-│   └── grafana/
-├── docs/
-│   └── kafka-learning-qa.md    # Study Q&A from building the pipeline
-├── client/                     # Phase 7: live feed UI (served by gateway)
-├── ksql/                       # Phase 4: ksqlDB statements (streams, anomaly queries)
-├── src/
-│   ├── drivers/
-│   │   ├── producer/           # Driver GPS simulator → gps-events-driver
-│   │   └── consumer/
-│   │       ├── printer/        # GPS printer
-│   │       ├── nearby/         # Driver GPS → GEOSEARCH → PUBLISH user:{riderId}
-│   │       └── eta/            # ETA calculator → eta-updates
-│   ├── riders/
-│   │   ├── producer/           # Rider GPS simulator → gps-events-rider
-│   │   └── consumer/
-│   │       └── geo/            # Rider GPS → Redis GEOADD
-│   ├── gateway/                # Socket.IO + Redis Pub/Sub (+ static UI)
-│   └── shared/
-│       ├── kafka/              # Kafka client, Schema Registry, Avro schemas
-│       └── redis/              # Redis client (GEO + Pub/Sub helpers)
-├── .env.example
-└── package.json
-```
-
-Nest workers are isolated processes under `drivers/`, `riders/`, and `gateway/`. **ksqlDB** and **Prometheus/Grafana** are separate Compose services — no Nest metrics code required for Phase 5.
-
----
-
-## Prerequisites
-
-- Docker Desktop (or compatible Docker engine)
-- Node.js 20+
-- npm
-
----
-
-## Getting started
-
-```bash
-git clone https://github.com/iikareem/ride-stream.git
-cd ride-stream
-cp .env.example .env
-npm install
-
-# Start Kafka, Schema Registry, Kafka UI, and create topics
-docker compose up -d
-docker compose logs init-topics
-
-# Terminal A — simulate drivers
-npm run start:producer
-
-# Terminal B — ETA calculator (gps-events-driver → eta-updates)
-npm run start:eta
-
-# Terminal C — nearby fan-out (GEOSEARCH riders → PUBLISH user:{riderId})
-npm run start:nearby
-```
-
-### Local endpoints
-
-| Service | URL |
-| --- | --- |
-| Kafka bootstrap | `localhost:9092,localhost:9093,localhost:9094` |
-| Schema Registry | http://localhost:8081 |
-| Kafka UI | http://localhost:8080 |
-| Redis | `localhost:6379` |
-| Redis Insight | http://localhost:5540 |
-
-Tear down (no volumes: data and offsets are wiped):
-
-```bash
-docker compose down
-```
-
----
-
-## Configuration
-
-Copy `.env.example` to `.env`:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `KAFKA_BROKERS` | `localhost:9092,localhost:9093,localhost:9094` | Comma-separated bootstrap servers |
-| `GPS_EVENTS_DRIVER_TOPIC` | `gps-events-driver` | Driver GPS topic name |
-| `GPS_EVENTS_RIDER_TOPIC` | `gps-events-rider` | Rider GPS topic name |
-| `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
-| `ETA_GROUP_ID` | `ridestream-eta` | ETA consumer group id |
-| `ETA_TRANSACTIONAL_ID` | `ridestream-eta-producer` | ETA EOS transactional.id (one live ETA instance) |
-| `SCHEMA_REGISTRY_URL` | `http://localhost:8081` | Confluent Schema Registry |
-| `DRIVER_COUNT` | `10` | Simulated drivers in the producer |
-| `RIDER_COUNT` | `10` | Simulated riders in the rider producer |
-| `RIDER_GEO_GROUP_ID` | `ridestream-rider-geo` | Rider GEO consumer group id |
-| `NEARBY_GROUP_ID` | `ridestream-nearby` | Nearby fan-out consumer group id |
-| `NEARBY_RADIUS_KM` | `2` | GEOSEARCH radius around driver (km) |
-| `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
-| `RIDERS_GEO_KEY` | `riders:geo` | Redis GEO key for rider positions |
-| `GATEWAY_PORT` | `3001` | Socket.IO gateway HTTP port |
-| `KAFKA_CLIENT_ID` | `ridestream` | Kafka client id |
-| `CONSUME_FROM_BEGINNING` | `true` | Replay earliest offsets (`false` = live tail only) |
-| `PROCESSING_DELAY_MS` | `0` | Artificial per-message sleep to grow lag |
-| `SESSION_TIMEOUT_MS` | `30000` | Broker kicks member if no heartbeat in this window |
-| `HEARTBEAT_INTERVAL_MS` | `3000` | How often the consumer heartbeats |
-| `REBALANCE_TIMEOUT_MS` | `60000` | Max time allowed for a rebalance |
-| `FETCH_MAX_WAIT_MS` | `500` | Broker may hold a fetch up to this long |
-| `FETCH_MIN_BYTES` | `1` | Min bytes before a fetch returns (`1` = ASAP) |
-
-Topic partition count (6) is set in `docker-compose.yml` under `init-topics`, not in the Nest app.
-
----
-
-## npm scripts
-
-| Script | Purpose |
-| --- | --- |
-| `npm run start:producer` | Driver GPS event producer (`gps-events-driver`) |
-| `npm run start:producer:dev` | Driver producer with watch mode |
-| `npm run start:rider-producer` | Rider GPS event producer (`gps-events-rider`) |
-| `npm run start:rider-producer:dev` | Rider producer with watch mode |
-| `npm run start:rider-geo` | Rider GEO consumer (`gps-events-rider` → Redis GEO) |
-| `npm run start:rider-geo:dev` | Rider GEO consumer with watch mode |
-| `npm run start:gateway` | WebSocket gateway + live feed UI on `GATEWAY_PORT` |
-| `npm run start:gateway:dev` | Gateway with watch mode |
-| `npm run emit:test` | Redis `PUBLISH user:{id}` → gateway → Socket.IO `drivers` (no Kafka) |
-| `npm run start:nearby` | Nearby fan-out (`gps-events-driver` → GEOSEARCH → `PUBLISH user:{riderId}`) |
-| `npm run start:nearby:dev` | Nearby fan-out with watch mode |
-| `npm run start:eta` | ETA calculator (`gps-events-driver` → `eta-updates`) |
-| `npm run start:eta:dev` | ETA calculator with watch mode |
-| `npm run build` | Compile TypeScript |
-| `npm start` | Default Nest HTTP app (not used by pipeline workers) |
-
----
-
-## Latency and rebalance (Phase 3c)
-
-Every consumer log line includes `latency_ms` = `now - event.timestamp` (producer wall clock embedded in the Avro payload). That is **end-to-end processing delay**, not Kafka’s official consumer-lag metric (offset lag lives in Kafka UI / `kafka-consumer-groups`).
-
-### Drill 1 — Live latency
-
-```bash
-# Prefer a clean live tail so latency_ms stays small
-CONSUME_FROM_BEGINNING=false npm run start:eta
-npm run start:producer
-```
-
-Expect `latency_ms` mostly in the tens–hundreds of ms when caught up. If you leave `CONSUME_FROM_BEGINNING=true` with a backlog, `latency_ms` will be huge until catch-up finishes — that is intentional teaching of lag.
-
-### Drill 2 — Grow lag on purpose
-
-```bash
-PROCESSING_DELAY_MS=2000 CONSUME_FROM_BEGINNING=false npm run start:eta
-npm run start:producer
-```
-
-Each message sleeps 2s → consumer cannot keep up → Kafka UI lag rises. Set delay back to `0` and watch lag drain.
-
-### Drill 3 — Rebalance (same groupId)
-
-Works for nearby or ETA — use the **same** script twice:
-
-```bash
-# Terminal 1
-npm run start:eta
-
-# Terminal 2 — same ridestream-eta group → Kafka splits the 6 partitions
-npm run start:eta
-```
-
-You should see:
+### Topic topology
 
 ```text
-[ridestream-eta] rebalancing — partitions being revoked/reassigned
-[ridestream-eta] joined — member=… assignment: gps-events-driver=[0, 2, 4]
+Topic                          Key          Value format   Partitions   Purpose
+gps-events-driver              driver_id    Avro           6            Driver location input
+gps-events-rider               rider_id     Avro           6            Rider location input
+eta-updates                    driver_id    Avro           6            Transactional ETA output
+driver-anomalies               driver_id    JSON           6            Speed-spike events
+driver-anomaly-windows         driver_id    JSON           6            Tumbling-window counts
+driver-anomaly-windows-hop     driver_id    JSON           6            Hopping-window counts
+driver-anomalies-teleport      driver_id    JSON           6            Position-jump events
+driver-anomalies-freeze        driver_id    JSON           6            Low-movement windows
 ```
 
-Stop one process; the survivor rebalances and takes the rest. During rebalance, at-least-once delivery can mean a few **duplicate** processings (offsets not yet committed).
+All application topics are created explicitly by `init-topics`; automatic topic creation is disabled. Each topic uses replication factor 3, one replica per broker, and `min.insync.replicas=2`.
 
-Also useful:
+### Partitioning and ordering
 
-```bash
-docker exec ridestream-broker kafka-consumer-groups \
-  --bootstrap-server localhost:9092 \
-  --describe --group ridestream-eta
+KafkaJS hashes each message key to select one of the six partitions. Events with the same `driver_id` or `rider_id` therefore remain on the same partition and are processed in order. Kafka does not provide ordering across different partitions.
+
+Six partitions allow at most six active consumers in one consumer group for that topic. Additional members remain idle until a partition becomes available. Separate groups do not compete for messages: the ETA, nearby, and ksqlDB pipelines each process the driver stream independently and maintain their own offsets.
+
+```text
+gps-events-driver (P0 ... P5)
+        │
+        ├── ridestream-eta       → P0 ... P5 → eta-updates
+        ├── ridestream-nearby    → P0 ... P5 → Redis Pub/Sub
+        └── ksqlDB group(s)      → P0 ... P5 → anomaly topics
 ```
 
-Or open Kafka UI → Consumer Groups.
+Group membership, partition assignments, and committed offsets are managed by Kafka. Offsets are persisted in the replicated `__consumer_offsets` internal topic. After a consumer or broker failure, the group rebalances and resumes from its last committed offset.
 
-### What the knobs mean
+### Delivery guarantees
 
-| Knob | Effect |
-| --- | --- |
-| `FETCH_MAX_WAIT_MS` / `FETCH_MIN_BYTES` | Fetch wait vs return-ASAP (micro-batching of pulls) |
-| `SESSION_TIMEOUT_MS` / `HEARTBEAT_INTERVAL_MS` | How fast a dead member is detected → rebalance starts |
-| `PROCESSING_DELAY_MS` | Simulates slow business logic → lag grows |
-| `CONSUME_FROM_BEGINNING` | Replay history vs live-only |
+- GPS producers are idempotent, preventing duplicates caused by producer retries.
+- The ETA worker uses Kafka transactions to publish an ETA and commit the consumed GPS offset atomically.
+- Kafka consumers default to `READ_COMMITTED` and do not expose aborted transactional output.
+- ksqlDB persistent queries use `exactly_once_v2`.
+- Redis Pub/Sub provides live delivery only and is not a durable event store.
 
----
+The ETA worker performs the following transaction for every input record:
 
-## Event shape (Avro)
+```text
+read GPS record
+    → decode Avro
+    → calculate distance and ETA
+    → begin transaction
+    → write eta-updates
+    → commit the next gps-events-driver offset
+    → commit transaction
+```
 
-Logical record (wire format is Confluent Avro binary with schema id):
+If publishing or offset staging fails, the transaction is aborted and the input record is retried. This prevents an ETA result from being committed without its matching input offset, or an input offset from advancing without an ETA result.
+
+`ETA_TRANSACTIONAL_ID` must be unique per live ETA process because Kafka uses it for producer fencing. To scale ETA processing, keep the same `ETA_GROUP_ID` but assign a different transactional ID to each process.
+
+### Event contracts
+
+Driver and rider GPS values use Confluent Avro wire format. Kafka message keys contain the corresponding `driver_id` or `rider_id`, preserving entity-level ordering.
+
+Driver GPS example:
 
 ```json
 {
@@ -504,188 +146,318 @@ Logical record (wire format is Confluent Avro binary with schema id):
 }
 ```
 
-Message key: `driver_id` (ordering per driver).
+Schemas are defined in `src/shared/kafka/schemas/`. The driver GPS schema demonstrates backward-compatible evolution by adding the optional `heading` field with a `null` default.
 
-Schemas live in [`src/shared/kafka/schemas/gps-event.avsc.ts`](src/shared/kafka/schemas/gps-event.avsc.ts):
+Schema Registry stores each value contract under a topic-based subject such as `gps-events-driver-value`. The producer registers the schema and writes the schema ID into the Confluent wire header; consumers use that ID to retrieve and cache the correct writer schema.
 
-- **v1** — baseline fields  
-- **v2** — adds optional `heading` (`null` default) under Registry `BACKWARD` compatibility  
+### Service boundaries
 
-On startup the app registers v1 then v2 for subject `gps-events-driver-value`, then produces with v2.
+- Producers own event generation, key selection, and Avro encoding.
+- Kafka owns durable transport, partition ordering, replication, offsets, and group coordination.
+- The ETA consumer owns deterministic ETA calculation and transactional output.
+- ksqlDB owns continuous anomaly filters, joins, and windowed aggregations.
+- Redis owns the current rider geospatial index and transient notification channels.
+- The gateway owns socket membership and forwards Redis channel messages; it does not consume Kafka directly.
+- Prometheus and Grafana observe the pipeline without participating in message processing.
 
-### Verify schema evolution
+### Live fan-out path
 
-```bash
-# List versions for the value subject
-curl -s http://localhost:8081/subjects/gps-events-driver-value/versions
+The rider GEO worker consumes `gps-events-rider` and runs `GEOADD` using longitude, latitude, and `rider_id`. For each driver event, the nearby worker runs `GEOSEARCH` around the driver’s coordinates using `NEARBY_RADIUS_KM`.
 
-# Inspect latest schema
-curl -s http://localhost:8081/subjects/gps-events-driver-value/versions/latest | jq .
-
-# Compatibility level for the subject (Compose defaults the cluster to BACKWARD)
-curl -s http://localhost:8081/config/gps-events-driver-value | jq .
+```text
+gps-events-rider
+        │
+        ▼
+Rider GEO worker ── GEOADD riders:geo
+                              ▲
+                              │ GEOSEARCH radius
+gps-events-driver             │
+        │                     │
+        ▼                     │
+Nearby worker ────────────────┘
+        │
+        │ PUBLISH user:{riderId} '{"driver_id":...}'
+        ▼
+Redis Pub/Sub
+        │
+        │ SUBSCRIBE user:{riderId}
+        ▼
+Gateway Redis service
+        │
+        │ server.to(channel).emit('drivers', payload)
+        ▼
+Socket.IO room user:{riderId}
+        │
+        ▼
+Browser client
 ```
 
-Or open Kafka UI → Schema Registry → `gps-events-driver-value`.
+The nearby worker is the Redis publisher. For every rider returned by `GEOSEARCH`, it calls `PUBLISH user:{riderId}` with the driver location payload. The Redis server returns the number of active subscribers that received the publication; the worker does not wait for browser acknowledgement.
 
----
+When a socket sends `join` with `{ userId }`, the gateway:
 
-## Roadmap
+1. Joins the socket to the Socket.IO room `user:{userId}`.
+2. Subscribes its Redis subscriber client to the channel with the same name.
+3. Parses each Redis message.
+4. Emits the payload to the local room as the Socket.IO event `drivers`.
+5. Unsubscribes when the final socket for that user disconnects.
 
-### Phase 1 — Foundation (done)
+The Redis integration uses two connections:
 
-- [x] Single-broker Kafka via Docker Compose (KRaft)
-- [x] `gps-events-driver` topic (6 partitions)
-- [x] GPS producer (JSON, keyed by `driver_id`)
-- [x] Plain consumer group that prints events
-- [x] Rebalance assignment logging
+- `client` runs normal commands such as `GEOADD`, `GEOSEARCH`, and `PUBLISH`.
+- `subClient` remains in subscriber mode and only handles `SUBSCRIBE`, `UNSUBSCRIBE`, and message events.
 
-### Phase 2 — Schema management (done)
+A dedicated subscriber connection is required because a Redis connection in subscriber mode cannot execute normal data commands. Channel subscriptions are reference-counted, so multiple browser tabs for one rider share one Redis subscription and the channel is removed only after the last tab disconnects.
 
-- [x] Avro serialization + Schema Registry
-- [x] Backward-compatible schema evolution (`heading` optional in v2)
+This path keeps WebSocket delivery outside Kafka consumers and prevents the gateway from performing geospatial work. Redis Pub/Sub has no replay: disconnected clients receive only events published after they reconnect.
 
-### Phase 3 — Consumers
+Design choices:
 
-- [x] ETA Calculator consumer group → `eta-updates` topic
-- [x] Latency tuning and rebalance behavior (`latency_ms`, fetch/session knobs, drills)
+- Kafka remains the durable source of location events; Redis is used only for low-latency lookup and live delivery.
+- Per-user channels avoid broadcasting every driver update to every connected client.
+- Matching Redis channel and Socket.IO room names allows direct channel-to-room routing without another lookup.
+- Geospatial matching stays in the nearby worker, keeping the gateway focused on connection management and delivery.
+- Pub/Sub intentionally favors low latency over acknowledgement, retry, and replay. A durable client notification history would require a Kafka topic, Redis Streams, or another persistent store.
 
-### Phase 4 — Stream processing (**ksqlDB**)
+## Technology stack
 
-Nest keeps ETA. Anomalies move to **ksqlDB** continuous SQL on `gps-events-driver`.
+- Node.js and TypeScript
+- NestJS
+- Apache Kafka 7.9 in KRaft mode
+- KafkaJS
+- Confluent Schema Registry and Avro
+- ksqlDB
+- Redis GEO and Pub/Sub
+- Socket.IO
+- Prometheus, Grafana, and kafka-exporter
+- Docker Compose
 
-- [x] Add ksqlDB server (+ CLI) to Docker Compose; wire Schema Registry; create `driver-anomalies` topic
-- [x] `ksql/` statements: `CREATE STREAM` over Avro `gps-events-driver`
-- [x] Anomaly queries → `driver-anomalies` topic (speed spikes first; then freeze / teleport where SQL fits)
-- [x] Windowed aggregates (tumbling / hopping) for spike counts
-- [x] Freeze + teleport heuristics (`04_freeze_teleport.sql`)
-- [x] `processing.guarantee = exactly_once_v2` (EOS) on ksqlDB
-- [x] Nest anomaly printer — **skipped** (verify with Kafka UI / `PRINT 'driver-anomalies'`)
+## Prerequisites
 
-### Phase 5 — Observability (done)
+- Node.js 20 or later
+- npm
+- Docker Desktop or another Docker Compose-compatible engine
 
-Infra only: **kafka-exporter** scrapes consumer lag via the Kafka protocol; **Prometheus** pulls every 15s; **Grafana** dashboards + Prometheus alert rules. Broker still exposes JMX on `9101` for optional JVM tooling; lag alerts use the exporter (no Nest code).
+## Getting started
+
+Clone the repository and install the application dependencies:
+
+```bash
+git clone https://github.com/iikareem/ride-stream.git
+cd ride-stream
+cp .env.example .env
+npm install
+```
+
+Start the infrastructure:
 
 ```bash
 docker compose up -d
-open http://localhost:3000          # Grafana — admin / admin
-# Dashboard: RideStream → RideStream Kafka
-open http://localhost:9090          # Prometheus
-open http://localhost:9090/alerts   # lag alert rules
-curl -s http://localhost:9308/metrics | grep kafka_consumergroup_lag
+docker compose ps
+docker compose logs init-topics
 ```
 
-**Lag drill:** slow ETA and watch Grafana climb:
+The `init-topics` container creates all application topics with six partitions, replication factor 3, and `min.insync.replicas=2`.
+
+## Run the pipeline
+
+Run each process in a separate terminal:
+
+```bash
+# Index simulated rider locations in Redis
+npm run start:rider-producer
+npm run start:rider-geo
+
+# Produce driver locations and process them
+npm run start:producer
+npm run start:eta
+npm run start:nearby
+
+# Serve the Socket.IO gateway and browser client
+npm run start:gateway
+```
+
+Open `http://localhost:3001`, connect, and join as `rider-001`. The predefined demo coordinates place `rider-001` near `driver-001`, allowing the complete Kafka-to-WebSocket path to be observed.
+
+To test the gateway without Kafka:
+
+```bash
+npm run emit:test -- rider-001 \
+  '{"driver_id":"driver-001","latitude":30.04,"longitude":31.23,"speed_kmh":42,"status":"available"}'
+```
+
+## Configure ksqlDB
+
+Start the driver producer once before registering the stream so that Schema Registry contains the Avro subject:
+
+```bash
+npm run start:producer
+docker exec -it ridestream-ksqldb-cli ksql http://ksqldb-server:8088
+```
+
+Run the scripts from the ksqlDB CLI:
+
+```sql
+RUN SCRIPT '/ksql/01_gps_stream.sql';
+RUN SCRIPT '/ksql/02_speed_spikes.sql';
+RUN SCRIPT '/ksql/03_spike_windows.sql';
+RUN SCRIPT '/ksql/04_freeze_teleport.sql';
+
+SHOW STREAMS;
+SHOW TABLES;
+SHOW QUERIES;
+```
+
+The queries produce:
+
+- `driver-anomalies` — individual speed spikes
+- `driver-anomaly-windows` — one-minute tumbling-window counts
+- `driver-anomaly-windows-hop` — one-minute windows advancing every 15 seconds
+- `driver-anomalies-teleport` — large jumps from the previous position
+- `driver-anomalies-freeze` — low-movement, low-speed windows
+
+The included thresholds are tuned for the local simulator:
+
+- Speed spike — `SPEED_KMH > 50`
+- Tumbling count — at least two spikes in a fixed one-minute window
+- Hopping count — at least two spikes in a one-minute window advancing every 15 seconds
+- Teleport — distance from the latest known position exceeds 0.25 km within the one-hour join range
+- GPS freeze — at least four events in two minutes, latitude and longitude spans below `0.00015`, and average speed below 8 km/h
+
+`latest_gps` is a ksqlDB table keyed by `DRIVER_ID`; the teleport stream joins each GPS event against this materialized latest-position state. The windowed outputs are ksqlDB tables because each key/window stores an updated aggregate rather than an append-only event sequence.
+
+Inspect an output topic from the CLI:
+
+```sql
+PRINT 'driver-anomalies' FROM BEGINNING;
+```
+
+## Observability
+
+The monitoring stack starts with Docker Compose:
+
+- Kafka UI — `http://localhost:8080`
+- Schema Registry — `http://localhost:8081`
+- ksqlDB REST API — `http://localhost:8088`
+- Prometheus — `http://localhost:9090`
+- Grafana — `http://localhost:3000` (`admin` / `admin`)
+- kafka-exporter metrics — `http://localhost:9308/metrics`
+- Redis Insight — `http://localhost:5540`
+
+Grafana provisions the RideStream Kafka dashboard automatically. Prometheus alert rules report warning-level consumer lag above 50 records for one minute and critical lag above 500 records for two minutes.
+
+To generate lag deliberately:
 
 ```bash
 PROCESSING_DELAY_MS=2000 CONSUME_FROM_BEGINNING=false npm run start:eta
 npm run start:producer
 ```
 
-Alert rules (see [`monitoring/alerts.yml`](monitoring/alerts.yml)): warn if lag `> 50` for 1m; critical if `> 500` for 2m.
+Application logs also report `latency_ms`, calculated from the event payload timestamp to processing time. This is end-to-end event latency and is different from Kafka consumer lag, which measures the difference between the partition log-end offset and the group’s committed offset.
 
-- [x] Kafka metrics into Prometheus (via kafka-exporter; broker JMX on `9101`)
-- [x] Grafana dashboards (provisioned RideStream Kafka)
-- [x] Consumer lag alerts (Prometheus rules)
+## Cluster verification
 
-### Phase 6 — Fault tolerance (done)
+Describe the topic assignments:
 
-- [x] Broker restart and offset resume
-- [x] Slow consumer / lag growth
-- [x] Duplicate injection vs idempotent producer (idempotent Nest producer enabled; drill still optional)
+```bash
+docker exec ridestream-broker-1 kafka-topics \
+  --bootstrap-server broker-1:29092 \
+  --describe --topic gps-events-driver
+```
 
-### Phase 7 — Live clients (capstone)
+Each partition should report three replicas and, while the cluster is healthy, three in-sync replicas.
 
-Push ride state to the browser in real time with **Redis Pub/Sub + WebSockets**.
+Test leader election by stopping one broker while the producer and ETA worker are running:
+
+```bash
+docker compose stop broker-1
+docker compose start broker-1
+```
+
+The remaining brokers retain controller quorum and two in-sync replicas, so processing should continue after a short metadata refresh.
+
+Expected failure behavior:
+
+- **Three brokers available:** all replicas are in sync and reads/writes operate normally.
+- **One broker unavailable:** the two remaining controllers retain quorum; partition leaders are re-elected where required and writes continue with two ISR members.
+- **Two brokers unavailable:** controller quorum and the minimum ISR requirement are lost; the cluster cannot safely continue normal writes.
+- **Broker restored:** it fetches missing records from partition leaders and rejoins the ISR only after catching up.
+
+Unclean leader election is disabled. Kafka will prefer temporary unavailability over promoting an out-of-sync replica that could lose acknowledged records.
+
+## Configuration
+
+The main environment variables are:
+
+- `KAFKA_BROKERS` — comma-separated bootstrap servers
+- `KAFKA_CLIENT_ID` — Kafka client identifier
+- `GPS_EVENTS_DRIVER_TOPIC` — driver GPS input topic
+- `GPS_EVENTS_RIDER_TOPIC` — rider GPS input topic
+- `ETA_UPDATES_TOPIC` — ETA output topic
+- `ETA_GROUP_ID` — ETA consumer group
+- `ETA_TRANSACTIONAL_ID` — transactional producer identifier
+- `RIDER_GEO_GROUP_ID` — rider GEO consumer group
+- `NEARBY_GROUP_ID` — nearby-driver consumer group
+- `SCHEMA_REGISTRY_URL` — Schema Registry endpoint
+- `REDIS_URL` — Redis connection URL
+- `RIDERS_GEO_KEY` — Redis geospatial index key
+- `NEARBY_RADIUS_KM` — nearby search radius
+- `GATEWAY_PORT` — HTTP and Socket.IO gateway port
+- `CONSUME_FROM_BEGINNING` — replay from the earliest available offset
+- `PROCESSING_DELAY_MS` — artificial consumer delay for lag testing
+
+See `.env.example` for defaults and additional Kafka consumer timing options.
+
+## Available commands
+
+```bash
+npm run start:producer        # Driver GPS producer
+npm run start:rider-producer  # Rider GPS producer
+npm run start:rider-geo       # Rider GPS to Redis GEO
+npm run start:eta             # Transactional ETA processor
+npm run start:nearby          # Nearby-rider notification worker
+npm run start:gateway         # Socket.IO gateway and web client
+npm run emit:test             # Direct Redis Pub/Sub smoke test
+npm run build                 # Compile the TypeScript project
+```
+
+Each application process also has a corresponding `:dev` command with watch mode.
+
+## Repository structure
 
 ```text
-Kafka consumers  →  Redis (SET latest + PUBLISH update)
-                         │
-                         ▼
-              Nest subscribes (Pub/Sub)  →  WebSocket  →  live clients
+ride-stream/
+├── client/                  Browser live-feed client
+├── docs/                    Learning notes and gateway documentation
+├── ksql/                    ksqlDB stream and table definitions
+├── monitoring/              Prometheus rules and Grafana provisioning
+├── scripts/                 Local utility scripts
+├── src/
+│   ├── drivers/
+│   │   ├── producer/        Driver GPS simulator
+│   │   └── consumer/
+│   │       ├── eta/         Transactional ETA processor
+│   │       └── nearby/      Redis GEOSEARCH and Pub/Sub fan-out
+│   ├── riders/
+│   │   ├── producer/        Rider GPS simulator
+│   │   └── consumer/geo/    Redis GEO index updater
+│   ├── gateway/             Socket.IO and Redis Pub/Sub gateway
+│   └── shared/              Kafka, Avro, Redis, and demo utilities
+├── docker-compose.yml
+├── .env.example
+└── package.json
 ```
 
-- [x] Rider GPS topic + producer (`gps-events-rider`, Avro `rider_id`)
-- [x] Redis in Docker Compose (GEO for riders)
-- [x] Consumer **GEOADD** riders from `gps-events-rider`
-- [x] Nest WebSocket gateway — connect + join `user:{userId}` + Redis Pub/Sub `SUBSCRIBE` / `PUBLISH`
-- [x] Fan-out driver updates via GEOSEARCH + Redis `PUBLISH user:{riderId}`
-- [x] Simple client UI that renders the live feed (`client/`, served at `http://localhost:3001/`)
+## Additional documentation
 
-**Live feed demo**
+- [Kafka learning notes](docs/kafka-learning-qa.md)
+- [Redis Pub/Sub and WebSocket gateway](docs/redis-pubsub-gateway.md)
+- [ksqlDB exactly-once notes](ksql/05_eos.md)
 
-```bash
-# Redis + Kafka stack up, then:
-npm run start:gateway
-# open http://localhost:3001/ → Connect & join as rider-001
+## Data lifecycle
 
-# Smoke without the full pipeline:
-npm run emit:test -- rider-001 '{"driver_id":"driver-001","latitude":30.04,"longitude":31.23,"speed_kmh":42,"status":"available"}'
-
-# Or full path: rider-producer + rider-geo + producer + nearby → UI updates
-```
-
-### Phase 8 — Cluster (done)
-
-3-broker KRaft cluster. App topics use **replication-factor=3** and **min.insync.replicas=2**. Nest already reads a broker list via `KAFKA_BROKERS` (idempotent / transactional producers use `acks=all`).
-
-```bash
-# Wipe the old single-broker stack, then bring up the cluster
-docker compose down
-docker compose up -d
-docker compose ps
-docker compose logs init-topics
-# Kafka UI → Topics → describe: each partition should show 3 replicas
-
-# Leader election drill — stop one broker while producer/ETA run
-docker compose stop broker-1
-# Writers should keep working (ISR still ≥ 2). Check Kafka UI leaders.
-docker compose start broker-1
-
-# Optional: stop two brokers → new writes fail (NotEnoughReplicas); reads of existing data can still work
-# docker compose stop broker-1 broker-2
-```
-
-- [x] 3-broker cluster, replication, `min.insync.replicas`
-- [x] Broker failure and leader election drills
-
-Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
-
----
-
-## Design decisions
-
-| Decision | Rationale |
-| --- | --- |
-| Partition by `driver_id` | Preserves GPS order per driver; required for sane ETA / anomaly logic |
-| 6 partitions | Enough parallelism to practice consumer-group scaling without over-provisioning locally |
-| JSON then Avro | Phase 1 proved the path with JSON; Phase 2 switched to Avro + Registry |
-| Avro + BACKWARD | Optional fields with defaults (e.g. `heading`) let readers use new schemas on old data |
-| Separate Nest entrypoints | One process per worker; scale a group by running more members with the same `groupId` |
-| Idempotent Nest GPS producer | KafkaJS `idempotent: true` → PID + sequence numbers; retries don’t duplicate |
-| Transactional Nest ETA | `transactional.id` + `send` + `sendOffsets` + `commit` |
-| **ksqlDB for anomalies (Phase 4)** | SQL stream processing on Kafka; Nest stays TypeScript workers for ETA |
-| Not Kafka Streams / Flink here | Heavier JVM apps; overkill for this learning repo — document as production alternatives |
-| Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
-| No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
-| Single broker first, then cluster (Phase 8) | Learn the full pipeline before RF / ISR / leader-election failure modes |
-| Redis + Pub/Sub (Phase 7) | Latest state in keys; PUBLISH triggers live fan-out |
-| WebSocket (Phase 7) | Push location / ETA / chat to clients in real time |
-
----
-
-## Learning notes
-
-Companion study sheet (questions and answers from building the pipeline):
-
-[`docs/kafka-learning-qa.md`](docs/kafka-learning-qa.md)
-
-Plain-language walkthrough of the WebSocket gateway and Redis Pub/Sub:
-
-[`docs/redis-pubsub-gateway.md`](docs/redis-pubsub-gateway.md)
-
----
+Kafka data is intentionally ephemeral in this local setup. Running `docker compose down` removes broker containers and their messages, offsets, and internal state. Redis Insight is the only service with a named volume.
 
 ## License
 
-Private / unlicensed (`UNLICENSED`). Not published for reuse.
+Private and unlicensed (`UNLICENSED`).
