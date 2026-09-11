@@ -64,38 +64,6 @@ flowchart LR
   gateway --> browser[BrowserClient]
 ```
 
-```text
-Driver producer ──Avro──▶ gps-events-driver
-                               │
-             ┌─────────────────┼──────────────────┐
-             │                 │                  │
-             ▼                 ▼                  ▼
-       ETA consumer      Nearby consumer       ksqlDB
-             │                 │                  │
-             ▼                 │                  ▼
-       eta-updates             │          anomaly topics
-                               │
-                               ▼
-                         Redis GEOSEARCH
-                               │
-                               ▼
-                         Redis Pub/Sub
-                               │
-                               ▼
-                      Socket.IO gateway
-                               │
-                               ▼
-                         Browser client
-
-Rider producer ──Avro──▶ gps-events-rider
-                               │
-                               ▼
-                        Rider GEO consumer
-                               │
-                               ▼
-                         Redis GEO index
-```
-
 Kafka consumers are organized into independent groups. Each group receives the complete topic stream and distributes its six partitions among the active members in that group.
 
 A detailed live-path diagram is available in [`docs/ridestream-live-architecture.excalidraw`](docs/ridestream-live-architecture.excalidraw).
