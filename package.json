@@ -1,9 +1,30 @@
 {
   "name": "ride-stream",
   "version": "0.1.0",
-  "description": "Real-time ride-sharing GPS pipeline on Apache Kafka (NestJS)",
+  "description": "Real-time ride-sharing GPS pipeline on Apache Kafka, NestJS, ksqlDB, and Redis",
   "private": true,
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iikareem/ride-stream.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iikareem/ride-stream/issues"
+  },
+  "homepage": "https://github.com/iikareem/ride-stream#readme",
+  "keywords": [
+    "kafka",
+    "nestjs",
+    "avro",
+    "schema-registry",
+    "ksqldb",
+    "redis",
+    "websocket",
+    "stream-processing"
+  ],
   "scripts": {
     "build": "nest build",
     "start": "nest start --entryFile drivers/producer/main",
@@ -20,9 +41,7 @@
     "start:nearby:dev": "nest start --watch --entryFile drivers/consumer/nearby/main",
     "start:eta": "nest start --entryFile drivers/consumer/eta/main",
     "start:eta:dev": "nest start --watch --entryFile drivers/consumer/eta/main",
-    "emit:test": "node scripts/emit-test.js",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest"
+    "emit:test": "node scripts/emit-test.js"
   },
   "dependencies": {
     "@kafkajs/confluent-schema-registry": "^4.1.0",

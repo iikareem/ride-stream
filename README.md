@@ -1,8 +1,29 @@
 # RideStream
 
+[![CI](https://github.com/iikareem/ride-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/iikareem/ride-stream/actions/workflows/ci.yml)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Kafka](https://img.shields.io/badge/Kafka-3--broker%20KRaft-231F20?logo=apachekafka&logoColor=white)](docker-compose.yml)
+
 RideStream is a real-time event-processing system that models the location pipeline of a ride-sharing platform. It ingests simulated driver and rider GPS events, calculates ETAs, detects movement anomalies, finds nearby riders, and streams driver updates to a browser client.
 
 The project uses a three-broker Apache Kafka cluster in KRaft mode, Avro contracts backed by Schema Registry, independent NestJS consumers, ksqlDB stream processing, Redis geospatial indexing and Pub/Sub, Socket.IO, and a Prometheus/Grafana monitoring stack.
+
+**Status:** complete learning system for local Kafka stream processing, replication, and live fan-out.
+
+## Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Processing model](#processing-model)
+- [Technology stack](#technology-stack)
+- [Getting started](#getting-started)
+- [Run the pipeline](#run-the-pipeline)
+- [Configure ksqlDB](#configure-ksqldb)
+- [Observability](#observability)
+- [Cluster verification](#cluster-verification)
+- [Configuration](#configuration)
+- [Scope and limitations](#scope-and-limitations)
+- [Additional documentation](#additional-documentation)
 
 ## Features
 
@@ -21,6 +42,27 @@ The project uses a three-broker Apache Kafka cluster in KRaft mode, Avro contrac
 - Consumer lag metrics, dashboards, and alerts
 
 ## Architecture
+
+```mermaid
+flowchart LR
+  driverProd[DriverProducer] -->|Avro| gpsDriver[gps-events-driver]
+  riderProd[RiderProducer] -->|Avro| gpsRider[gps-events-rider]
+
+  gpsDriver --> eta[ETAConsumer]
+  gpsDriver --> nearby[NearbyConsumer]
+  gpsDriver --> ksql[ksqlDB]
+
+  eta -->|Avro| etaTopic[eta-updates]
+  ksql --> anomalies[AnomalyTopics]
+
+  gpsRider --> riderGeo[RiderGeoConsumer]
+  riderGeo -->|GEOADD| redisGeo[RedisGEO]
+
+  nearby -->|GEOSEARCH| redisGeo
+  nearby -->|PUBLISH| redisPub[RedisPubSub]
+  redisPub --> gateway[SocketIOGateway]
+  gateway --> browser[BrowserClient]
+```
 
 ```text
 Driver producer ──Avro──▶ gps-events-driver
@@ -55,6 +97,8 @@ Rider producer ──Avro──▶ gps-events-rider
 ```
 
 Kafka consumers are organized into independent groups. Each group receives the complete topic stream and distributes its six partitions among the active members in that group.
+
+A detailed live-path diagram is available in [`docs/ridestream-live-architecture.excalidraw`](docs/ridestream-live-architecture.excalidraw).
 
 ## Processing model
 
@@ -448,11 +492,25 @@ ride-stream/
 └── package.json
 ```
 
+## Scope and limitations
+
+RideStream is a local learning system, not a production deployment. Intentional boundaries:
+
+- Kafka and Redis data are ephemeral; `docker compose down` removes messages and offsets.
+- There is no authentication on Kafka, Schema Registry, Redis, or the WebSocket gateway.
+- Redis Pub/Sub has no replay; live clients only receive events published after they connect.
+- ETA destinations are deterministic stand-ins, not real trip routing.
+- ksqlDB anomaly thresholds are tuned for the local GPS simulator.
+- Application workers run as separate Nest processes and are started manually from the host.
+
+These constraints keep the repository focused on Kafka partitioning, replication, consumer groups, schema evolution, stream SQL, and live fan-out.
+
 ## Additional documentation
 
 - [Kafka learning notes](docs/kafka-learning-qa.md)
 - [Redis Pub/Sub and WebSocket gateway](docs/redis-pubsub-gateway.md)
 - [ksqlDB exactly-once notes](ksql/05_eos.md)
+- [Live architecture diagram](docs/ridestream-live-architecture.excalidraw)
 
 ## Data lifecycle
 
