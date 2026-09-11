@@ -2,7 +2,10 @@
 
 [![CI](https://github.com/iikareem/ride-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/iikareem/ride-stream/actions/workflows/ci.yml)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![NestJS](https://img.shields.io/badge/NestJS-workers-E0234E?logo=nestjs&logoColor=white)](https://nestjs.com/)
 [![Kafka](https://img.shields.io/badge/Kafka-3--broker%20KRaft-231F20?logo=apachekafka&logoColor=white)](docker-compose.yml)
+[![Avro](https://img.shields.io/badge/Avro-Schema%20Registry-0B5CAD?logo=apache&logoColor=white)](https://avro.apache.org/)
+[![Redis](https://img.shields.io/badge/Redis-GEO%20%2B%20Pub%2FSub-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 
 RideStream is a real-time event-processing system that models the location pipeline of a ride-sharing platform. It ingests simulated driver and rider GPS events, calculates ETAs, detects movement anomalies, finds nearby riders, and streams driver updates to a browser client.
 
