@@ -1,34 +1,71 @@
+# Phase 8 — 3-broker KRaft cluster (replication-factor=3, min.insync.replicas=2).
+# Host ports: broker-1→9092, broker-2→9093, broker-3→9094.
+# After upgrading from single-broker: docker compose down && docker compose up -d
+
+x-broker-common: &broker-common
+  image: confluentinc/cp-kafka:7.9.0
+  environment: &broker-env
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker-1:29093,2@broker-2:29093,3@broker-3:29093
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  healthcheck: &broker-health
+    test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+    interval: 10s
+    timeout: 10s
+    retries: 18
+    start_period: 20s
+
 services:
-  broker:
-    image: confluentinc/cp-kafka:7.9.0
-    hostname: broker
-    container_name: ridestream-broker
+  broker-1:
+    <<: *broker-common
+    hostname: broker-1
+    container_name: ridestream-broker-1
     ports:
       - "9092:9092"
       - "9101:9101"
     environment:
+      <<: *broker-env
       KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://broker:29092,CONTROLLER://broker:29093,PLAINTEXT_HOST://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:29093
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LISTENERS: PLAINTEXT://broker-1:29092,CONTROLLER://broker-1:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker-1:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_JMX_PORT: 9101
       KAFKA_JMX_HOSTNAME: localhost
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
-      interval: 10s
-      timeout: 10s
-      retries: 12
+
+  broker-2:
+    <<: *broker-common
+    hostname: broker-2
+    container_name: ridestream-broker-2
+    ports:
+      - "9093:9092"
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: PLAINTEXT://broker-2:29092,CONTROLLER://broker-2:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker-2:29092,PLAINTEXT_HOST://localhost:9093
+
+  broker-3:
+    <<: *broker-common
+    hostname: broker-3
+    container_name: ridestream-broker-3
+    ports:
+      - "9094:9092"
+    environment:
+      <<: *broker-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: PLAINTEXT://broker-3:29092,CONTROLLER://broker-3:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker-3:29092,PLAINTEXT_HOST://localhost:9094
 
   # Schema Registry is wired for Phase 2; safe to leave running unused in Phase 1.
   schema-registry:
@@ -36,13 +73,17 @@ services:
     hostname: schema-registry
     container_name: ridestream-schema-registry
     depends_on:
-      broker:
+      broker-1:
+        condition: service_healthy
+      broker-2:
+        condition: service_healthy
+      broker-3:
         condition: service_healthy
     ports:
       - "8081:8081"
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: broker:29092
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: broker-1:29092,broker-2:29092,broker-3:29092
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
       SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: BACKWARD
 
@@ -50,68 +91,54 @@ services:
     image: provectuslabs/kafka-ui:v0.7.2
     container_name: ridestream-kafka-ui
     depends_on:
-      broker:
+      broker-1:
+        condition: service_healthy
+      broker-2:
+        condition: service_healthy
+      broker-3:
         condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: ridestream
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:29092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker-1:29092,broker-2:29092,broker-3:29092
       KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
 
-  # Creates gps-events-driver, gps-events-rider, eta-updates, and driver-anomalies once the broker is healthy.
+  # Creates app topics once all three brokers are healthy (RF=3 needs a full cluster).
   init-topics:
     image: confluentinc/cp-kafka:7.9.0
     container_name: ridestream-init-topics
     depends_on:
-      broker:
+      broker-1:
+        condition: service_healthy
+      broker-2:
+        condition: service_healthy
+      broker-3:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
         set -euo pipefail
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic gps-events-driver \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic gps-events-rider \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic eta-updates \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic driver-anomalies \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic driver-anomaly-windows \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic driver-anomaly-windows-hop \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic driver-anomalies-teleport \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --create --if-not-exists \
-          --topic driver-anomalies-freeze \
-          --partitions 6 \
-          --replication-factor 1 \
-          --config retention.ms=86400000
-        kafka-topics --bootstrap-server broker:29092 --list
-        echo "Topics ready."
+        BOOTSTRAP="broker-1:29092,broker-2:29092,broker-3:29092"
+        for topic in \
+          gps-events-driver \
+          gps-events-rider \
+          eta-updates \
+          driver-anomalies \
+          driver-anomaly-windows \
+          driver-anomaly-windows-hop \
+          driver-anomalies-teleport \
+          driver-anomalies-freeze
+        do
+          kafka-topics --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists \
+            --topic "$$topic" \
+            --partitions 6 \
+            --replication-factor 3 \
+            --config retention.ms=86400000 \
+            --config min.insync.replicas=2
+        done
+        kafka-topics --bootstrap-server "$$BOOTSTRAP" --describe
+        echo "Topics ready (RF=3, min.insync.replicas=2)."
     restart: "no"
 
   # Phase 4 Step 1 — ksqlDB server (SQL stream processing). No anomaly queries yet.
@@ -120,7 +147,11 @@ services:
     hostname: ksqldb-server
     container_name: ridestream-ksqldb-server
     depends_on:
-      broker:
+      broker-1:
+        condition: service_healthy
+      broker-2:
+        condition: service_healthy
+      broker-3:
         condition: service_healthy
       schema-registry:
         condition: service_started
@@ -128,18 +159,19 @@ services:
       - "8088:8088"
     environment:
       KSQL_CONFIG_DIR: /etc/ksql
-      KSQL_BOOTSTRAP_SERVERS: broker:29092
+      KSQL_BOOTSTRAP_SERVERS: broker-1:29092,broker-2:29092,broker-3:29092
       KSQL_HOST_NAME: ksqldb-server
       KSQL_LISTENERS: http://0.0.0.0:8088
       KSQL_CACHE_MAX_BYTES_BUFFERING: 0
       KSQL_KSQL_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 3
       KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: "true"
       KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: "true"
-      # Single-broker local cluster
-      KSQL_KSQL_SINK_REPLICAS: 1
-      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
-      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 1
+      # Match Phase 8 cluster RF / min ISR
+      KSQL_KSQL_SINK_REPLICAS: 3
+      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 3
+      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 3
+      KSQL_KSQL_STREAMS_PRODUCER_MIN_INSYNC_REPLICAS: 2
       # Phase 4 Step 6 — EOS for persistent queries (read → process → write)
       KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE: exactly_once_v2
     healthcheck:
@@ -165,12 +197,18 @@ services:
     image: danielqsj/kafka-exporter:v1.7.0
     container_name: ridestream-kafka-exporter
     depends_on:
-      broker:
+      broker-1:
+        condition: service_healthy
+      broker-2:
+        condition: service_healthy
+      broker-3:
         condition: service_healthy
     ports:
       - "9308:9308"
     command:
-      - --kafka.server=broker:29092
+      - --kafka.server=broker-1:29092
+      - --kafka.server=broker-2:29092
+      - --kafka.server=broker-3:29092
       - --web.listen-address=:9308
 
   prometheus:

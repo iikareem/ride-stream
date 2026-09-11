@@ -4,7 +4,7 @@ RideStream is a real-time GPS streaming pipeline that models the backend of a ri
 
 Events are keyed by `driver_id` for strict per-driver ordering. The serialization path is designed around **Avro** and Confluent Schema Registry so schemas can evolve safely under compatibility rules. ksqlDB can run with exactly-once processing guarantees; Prometheus/Grafana observability complete the operational story.
 
-**Status:** Phase 7 — Live clients (Redis GEO + Pub/Sub + WebSocket + live feed UI). Typed event names still open; Phase 8 cluster is next.
+**Status:** Phase 8 — 3-broker cluster (RF=3, `min.insync.replicas=2`). Typed live event names still open.
 
 > **Learning project.** RideStream is a practical build for learning Apache Kafka, Avro, Schema Registry, consumer groups, and stream-processing concepts (Nest workers + ksqlDB) by implementing a realistic ride-sharing GPS pipeline.
 
@@ -20,7 +20,7 @@ What this project exercises end to end:
 - Stateful / windowed stream processing with **ksqlDB** (anomalies)
 - Consumer lag monitoring and fault-injection drills
 
-The full pipeline is proven on one broker first. Multi-broker clustering follows once that path is solid.
+The full pipeline was proven on one broker first; Phase 8 runs the same path on a 3-broker cluster.
 
 ---
 
@@ -32,7 +32,7 @@ The full pipeline is proven on one broker first. Multi-broker clustering follows
 Drivers (Nest producers)
         │
         ▼
-  Kafka broker (KRaft, single node for now)
+  Kafka cluster (KRaft, 3 brokers, RF=3)
         │
         ├──▶ Nest ETA Calculator     → eta-updates
         └──▶ ksqlDB                  → driver-anomalies
@@ -353,7 +353,7 @@ npm run start:nearby
 
 | Service | URL |
 | --- | --- |
-| Kafka bootstrap | `localhost:9092` |
+| Kafka bootstrap | `localhost:9092,localhost:9093,localhost:9094` |
 | Schema Registry | http://localhost:8081 |
 | Kafka UI | http://localhost:8080 |
 | Redis | `localhost:6379` |
@@ -373,7 +373,7 @@ Copy `.env.example` to `.env`:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated bootstrap servers |
+| `KAFKA_BROKERS` | `localhost:9092,localhost:9093,localhost:9094` | Comma-separated bootstrap servers |
 | `GPS_EVENTS_DRIVER_TOPIC` | `gps-events-driver` | Driver GPS topic name |
 | `GPS_EVENTS_RIDER_TOPIC` | `gps-events-rider` | Rider GPS topic name |
 | `ETA_UPDATES_TOPIC` | `eta-updates` | ETA output topic |
@@ -625,10 +625,29 @@ npm run emit:test -- rider-001 '{"driver_id":"driver-001","latitude":30.04,"long
 # Or full path: rider-producer + rider-geo + producer + nearby → UI updates
 ```
 
-### Phase 8 — Cluster (future)
+### Phase 8 — Cluster (done)
 
-- [ ] 3-broker cluster, replication, `min.insync.replicas`
-- [ ] Broker failure and leader election drills
+3-broker KRaft cluster. App topics use **replication-factor=3** and **min.insync.replicas=2**. Nest already reads a broker list via `KAFKA_BROKERS` (idempotent / transactional producers use `acks=all`).
+
+```bash
+# Wipe the old single-broker stack, then bring up the cluster
+docker compose down
+docker compose up -d
+docker compose ps
+docker compose logs init-topics
+# Kafka UI → Topics → describe: each partition should show 3 replicas
+
+# Leader election drill — stop one broker while producer/ETA run
+docker compose stop broker-1
+# Writers should keep working (ISR still ≥ 2). Check Kafka UI leaders.
+docker compose start broker-1
+
+# Optional: stop two brokers → new writes fail (NotEnoughReplicas); reads of existing data can still work
+# docker compose stop broker-1 broker-2
+```
+
+- [x] 3-broker cluster, replication, `min.insync.replicas`
+- [x] Broker failure and leader election drills
 
 Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 
@@ -649,7 +668,7 @@ Kafka = events. Redis Pub/Sub = notify. WebSocket = live push to the client.
 | Not Kafka Streams / Flink here | Heavier JVM apps; overkill for this learning repo — document as production alternatives |
 | Topics created in Compose | Explicit layout; `AUTO_CREATE_TOPICS` is disabled |
 | No Docker volumes (yet) | Ephemeral local data; wipe clean with `compose down` |
-| Single broker first | Learn the full pipeline before cluster failure modes |
+| Single broker first, then cluster (Phase 8) | Learn the full pipeline before RF / ISR / leader-election failure modes |
 | Redis + Pub/Sub (Phase 7) | Latest state in keys; PUBLISH triggers live fan-out |
 | WebSocket (Phase 7) | Push location / ETA / chat to clients in real time |
 
