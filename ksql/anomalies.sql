@@ -4,5 +4,6 @@
 -- Step 3: 02_speed_spikes.sql
 -- Step 4: 03_spike_windows.sql
 -- Step 5: 04_freeze_teleport.sql
--- Step 6: EOS — see 05_eos.md + KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE in Compose
+-- Step 6: EOS — KSQL_KSQL_STREAMS_PROCESSING_GUARANTEE in Compose
+--         notes: docs/notes/03 ksqlDB/ksqlDB Streams, Windows, and Anomalies.md
 -- Step 7: Nest anomaly printer — skipped (use PRINT / Kafka UI)

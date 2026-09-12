@@ -443,7 +443,7 @@ Each application process also has a corresponding `:dev` command with watch mode
 ```text
 ride-stream/
 ├── client/                  Browser live-feed client
-├── docs/                    Learning notes and gateway documentation
+├── docs/notes/              Learning notes (Kafka, Avro, ksqlDB, Redis, gateway)
 ├── ksql/                    ksqlDB stream and table definitions
 ├── monitoring/              Prometheus rules and Grafana provisioning
 ├── scripts/                 Local utility scripts
@@ -478,9 +478,7 @@ These constraints keep the repository focused on Kafka partitioning, replication
 
 ## Additional documentation
 
-- [Kafka learning notes](docs/kafka-learning-qa.md)
-- [Redis Pub/Sub and WebSocket gateway](docs/redis-pubsub-gateway.md)
-- [ksqlDB exactly-once notes](ksql/05_eos.md)
+- [Learning notes](docs/notes/RideStream.md)
 - [Live architecture diagram](docs/ridestream-live-architecture.excalidraw)
 
 ## Data lifecycle

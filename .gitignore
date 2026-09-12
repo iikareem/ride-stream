@@ -22,3 +22,6 @@ Thumbs.db
 # Coverage / test
 coverage/
 *.tsbuildinfo
+
+# Local study notes — not published
+docs/kafka-learning-qa.md
